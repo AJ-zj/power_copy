@@ -1,0 +1,10 @@
+{
+  "demo/policy": {
+    "title_selector": "h1",
+    "body_selector": "article",
+    "published_selector": "time",
+    "issuer_selector": null,
+    "region": null,
+    "expected_title_contains": "模拟政策"
+  }
+}

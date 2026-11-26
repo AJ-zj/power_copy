@@ -1,0 +1,24 @@
+{
+  "verified_at": "2026-11-26T10:40:50+08:00",
+  "suites": [
+    {
+      "label": "V2 原有后端离线回归",
+      "command": "python scripts/verify-workbench-runtime.py --core",
+      "summary": "Agent、工具、政策查询、版本化、采集、预算与 Trace",
+      "status": "passed",
+      "passed": 795,
+      "failed": 0,
+      "skipped": 0,
+      "duration_seconds": 21.96
+    },
+    {
+      "label": "Agent Playground 与工具接口验收",
+      "command": "python scripts/verify-workbench-runtime.py",
+      "summary": "真实 SQLite 工具、任务 Trace、空结果、预算限制、重试与敏感信息脱敏",
+      "status": "passed",
+      "passed": 8,
+      "failed": 0,
+      "skipped": 0
+    }
+  ]
+}

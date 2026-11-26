@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "powercopy-v2"
+version = "0.1.0"
+description = "PowerCopy V2：可配置、可评测、可保障的文案 Agent 运行时"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "openai>=1.0",
+  "python-dotenv>=1.0",
+  "pydantic>=2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8",
+]
+api = [
+  "fastapi>=0.110",
+  "uvicorn[standard]>=0.27",
+]
+data = [
+  "pypdf>=6.21.4,<7",
+  "requests>=2.25,<3",
+]
+
+[tool.setuptools.packages.find]
+include = ["powercopy*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"

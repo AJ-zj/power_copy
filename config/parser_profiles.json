@@ -1,0 +1,33 @@
+{
+  "ndrc/market_rules": {
+    "title_selector": "h1",
+    "body_selector": ".zhengwen",
+    "published_selector": "meta[name=\"PubDate\"]",
+    "issuer_selector": "meta[name=\"SiteName\"]",
+    "region": null,
+    "expected_title_contains": "电力市场运行基本规则",
+    "exclude_selectors": []
+  },
+  "nea/registration_rules": {
+    "title_selector": "meta[name=\"ArticleTitle\"]",
+    "body_selector": ".detail",
+    "published_selector": "meta[name=\"PubDate\"]",
+    "issuer_selector": "meta[name=\"ContentSource\"]",
+    "region": null,
+    "expected_title_contains": "电力市场注册基本规则",
+    "exclude_selectors": [
+      "p[style*=\"display:none\"]",
+      "h1[style*=\"display:none\"]",
+      "p:has(a)"
+    ]
+  },
+  "nea_east/anhui_market_news": {
+    "title_selector": "meta[name=\"ArticleTitle\"]",
+    "body_selector": ".wrapper_detail_text",
+    "published_selector": "meta[name=\"PubDate\"]",
+    "issuer_selector": "meta[name=\"SiteName\"]",
+    "region": "安徽",
+    "expected_title_contains": "安徽电力现货市场",
+    "exclude_selectors": []
+  }
+}

@@ -1,0 +1,40 @@
+# ---------------------------------------------------------------- 密钥与本地配置
+.env
+config/pdf_metadata.json
+
+# ---------------------------------------------------------------- Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# ---------------------------------------------------------------- 运行数据（不入库）
+storage/*.db
+storage/*.db-*
+storage/raw/
+storage/raw_pdf/
+storage/ingestion_runs/
+storage/rag/
+workspace/
+*.sqlite3
+*.sqlite3-journal
+
+# ---------------------------------------------------------------- 前端
+node_modules/
+frontend/node_modules/
+frontend/dist/
+.pnpm-store/
+.workbench-deps/
+.workbench-pnpm/
+
+# ---------------------------------------------------------------- 运行时临时文件
+*.bak48
+*.log
+.DS_Store
+Thumbs.db
