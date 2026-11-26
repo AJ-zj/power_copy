@@ -1,28 +1,22 @@
-"""把 4.6 的框架中立绑定（PolicyToolBinding）适配到本项目真实 Tool System。
+"""真实政策查询工具：把 4.6 的绑定适配到项目 Tool System。
 
-本模块只做三件事：
-1. 把 `build_policy_bindings()` 的 binding 转换成项目真实的 `Tool` 数据类；
-2. 把 `PolicyQueryError` 收敛成**结构化、无数据库内部信息**的错误负载；
-3. 提供两个互斥的注册入口：模拟工具入口、真实数据库工具入口。
+04.9 更新
+=========
+之前本模块用「handler 返回错误负载」的方式绕过 `ToolExecutor` 把异常
+统一折叠为 `EXECUTION_ERROR` 的限制。现在 `ToolExecutor` 支持
+`ToolBusinessError` 与 `ToolOutcome`，可以按语义正确分类：
 
-设计约束（不修改已验收模块）：
-- 不碰 `powercopy/tools/base.py`、`registry.py`、`executor.py`；
-- 模型侧参数**不包含**数据库路径、SQL、文件路径、写操作；
-- 数据库由程序配置指定（环境变量 `POLICY_DB_PATH`），只读打开。
+| 情况 | execution_status | business_status | 模型看到 |
+|---|---|---|---|
+| 查到政策 | ok | success | 数据 |
+| 搜索无命中（正常空结果） | ok | empty | 空列表 + 说明 |
+| 政策不存在 / 版本不存在 | ok | failed | 业务错误码 |
+| 数据库不可读 | ok | failed | 业务错误码 |
+| 参数不合法 | invalid_arguments | not_applicable | Schema 错误 |
+| handler 崩溃 | execution_error | not_applicable | 通用错误 |
 
-关于错误映射的说明（重要）
---------------------------
-`ToolExecutor.execute` 对 handler 抛出的任何异常统一折叠为
-`error_type="EXECUTION_ERROR"`、`error_message="工具执行失败"`，
-原始错误码会丢失。由于 `executor.py` 已验收冻结，这里改为
-让 handler **返回**结构化错误负载：
-
-    {"ok": False, "error_code": "POLICY_VERSION_NOT_FOUND",
-     "error_message": "...", "retryable": False}
-
-这样模型能拿到可行动的失败原因，同时不会看到任何
-SQL、路径、堆栈或数据库内部异常原文。成功时返回的负载与
-`PolicyQueryService` 的原始契约**完全一致**（不加任何字段）。
+`empty` 与 `failed` 的区分是 04.9 的核心：
+搜索没命中不是错误，模型不该因此重试或道歉。
 """
 
 from dataclasses import dataclass
@@ -48,6 +42,11 @@ from powercopy.tools.builtin.policy_db import (
     build_policy_bindings,
 )
 from powercopy.tools.registry import ToolRegistry
+from powercopy.tools.result import (
+    BusinessStatus,
+    ToolBusinessError,
+    ToolOutcome,
+)
 
 
 DEFAULT_DB_PATH = "storage/policies_versioned.db"
@@ -74,27 +73,42 @@ def resolve_db_path(db_path: str | Path | None = None) -> Path:
     return Path(environ.get(DB_PATH_ENV) or DEFAULT_DB_PATH)
 
 
-def _safe_error(code: str) -> dict:
-    return {
-        "ok": False,
-        "error_code": code,
-        "error_message": SAFE_MESSAGES.get(code, DEFAULT_SAFE_MESSAGE),
-        "retryable": False,
-    }
+def _business_error(code: str) -> ToolBusinessError:
+    """把内部错误码转成对模型安全的业务异常。"""
+
+    return ToolBusinessError(
+        code,
+        SAFE_MESSAGES.get(code, DEFAULT_SAFE_MESSAGE),
+        retryable=False,
+    )
 
 
 def wrap_handler(handler: Callable[..., Any]) -> Callable[..., Any]:
-    """把 PolicyQueryError 收敛成结构化负载，其余异常继续向上抛。
+    """把 PolicyQueryError 翻译成 ToolBusinessError。
 
-    继续向上抛的异常（如程序缺陷）由 ToolExecutor 折叠为
-    EXECUTION_ERROR，同样不会把堆栈或 SQL 暴露给模型。
+    其余异常（程序缺陷）继续向上抛，由 ToolExecutor 归为
+    `execution_error`，同样不会把堆栈或 SQL 暴露给模型。
+
+    同时把「搜索无结果」从 `success` 修正为 `empty`：
+    查不到政策是正常业务结果，不是失败。
     """
 
     def wrapped(**kwargs):
         try:
-            return handler(**kwargs)
+            result = handler(**kwargs)
         except PolicyQueryError as error:
-            return _safe_error(getattr(error, "code", "") or "")
+            raise _business_error(getattr(error, "code", "") or "") from error
+
+        # 搜索结果为空 → business_status = empty
+        if isinstance(result, dict) and result.get("search_mode") is not None:
+            if not result.get("items"):
+                return ToolOutcome(
+                    data=result,
+                    business_status=BusinessStatus.EMPTY,
+                    business_code="NO_MATCH",
+                )
+
+        return result
 
     wrapped.__name__ = getattr(handler, "__name__", "policy_handler")
     return wrapped

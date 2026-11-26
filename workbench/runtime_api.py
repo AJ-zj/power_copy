@@ -85,11 +85,17 @@ class LocalPolicyLLM(LLMClient):
 
         search = observations[0]
         search_data = search.get("data") or {}
-        if not search["success"] or search_data.get("ok") is False:
-            error = search.get("error_message") or search_data.get("error_message")
+
+        # 04.9：直接读状态字段，不再从 payload 反推
+        if search.get("execution_status") != "ok":
+            error = search.get("error_message")
+            return self.response(f"本地政策工具执行失败。{error or '请核对工具结果。'}")
+
+        if search.get("business_status") == "failed":
+            error = search.get("error_message")
             return self.response(f"本地政策查询失败。{error or '请核对工具结果。'}")
 
-        items = search_data["items"]
+        items = search_data.get("items") or []
         if not items:
             return self.response(f"本地政策库未检索到含「{self.keyword}」的记录。")
 
@@ -105,8 +111,10 @@ class LocalPolicyLLM(LLMClient):
         )
         if len(observations) == 2:
             detail = observations[1]
-            detail_data = detail.get("data") or {}
-            if detail["success"] and detail_data.get("ok") is not False:
+            if (
+                detail.get("execution_status") == "ok"
+                and detail.get("business_status") in ("success", "empty")
+            ):
                 content += "该版本正文片段和官方来源见证据区。"
             else:
                 content += "本次未能读取该版本正文，可在工具调用中查看原因。"
@@ -184,19 +192,18 @@ class ObservedToolExecutor(ToolExecutor):
             json.dumps(display_arguments, allow_nan=False)
         except (TypeError, ValueError, RecursionError):
             display_arguments = arguments
-        # Reuse the executor result as observed, including handler-level failure data.
-        payload = result.data if isinstance(result.data, dict) else {}
-        business_status = "unavailable"
-        if result.success:
-            business_status = "failed" if payload.get("ok") is False else "success"
+        # 04.9：状态直接来自 ToolResult，不再从 payload 反推。
+        # executor 已经区分了执行层与业务层，这里只做展示映射。
         self.calls.append({
             "name": name,
             "arguments": display_arguments,
-            "execution_status": "success" if result.success else "failed",
-            "business_status": business_status,
+            "execution_status": str(result.execution_status),
+            "business_status": str(result.business_status),
+            "business_code": result.business_code,
+            "retryable": result.retryable,
             "result": result.data,
-            "error_type": result.error_type or payload.get("error_code"),
-            "error_message": result.error_message or payload.get("error_message"),
+            "error_type": result.error_type,
+            "error_message": result.error_message,
             "latency_ms": result.latency_ms,
         })
         return result
@@ -204,11 +211,16 @@ class ObservedToolExecutor(ToolExecutor):
     def evidence(self) -> list[dict]:
         items = {}
         for call in self.calls:
+            # 04.9：只有业务成功才有证据；空结果与失败都不产生证据
             if call["business_status"] != "success":
                 continue
             payload = call["result"]
-            rows = payload["items"] if call["name"] == "search_policy" else [payload]
-            for row in rows:
+            if not isinstance(payload, dict):
+                continue
+            rows = payload.get("items") if call["name"] == "search_policy" else [payload]
+            for row in rows or []:
+                if not isinstance(row, dict) or "policy_id" not in row:
+                    continue
                 key = (row["policy_id"], row["version"])
                 fields = ("policy_id", "version", "title", "source_key", "fetch_id", "content_sha256")
                 evidence = {field: row[field] for field in fields}

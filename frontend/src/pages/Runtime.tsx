@@ -19,11 +19,23 @@ const names: Record<string, string> = {
   model_retry: '模型重试',
   budget_exceeded: '预算耗尽', incomplete_response: '模型响应不完整',
   completed: '完成', success: '成功', failed: '失败', stopped: '已停止', unavailable: '无业务结果',
+  // 04.9 三层状态
+  ok: '正常', empty: '无结果', not_applicable: '不适用',
+  tool_not_found: '工具未注册', invalid_json: '参数非法', invalid_arguments: '参数不符',
+  execution_error: '执行异常',
 }
 
+// 04.9：执行层与业务层各有自己的取值空间，不能共用一套 tone 判断
+const EXECUTION_OK = ['ok']
+const EXECUTION_FAILED = ['tool_not_found', 'invalid_json', 'invalid_arguments', 'execution_error']
+const BUSINESS_OK = ['success']
+const BUSINESS_NEUTRAL = ['empty', 'not_applicable']
+
 function Status({ value }: { value: string }) {
-  const tone = ['success', 'completed'].includes(value) ? 'success' :
-    value === 'failed' ? 'error' : value === 'unavailable' ? 'neutral' : 'warning'
+  const tone = EXECUTION_OK.includes(value) || BUSINESS_OK.includes(value) ? 'success' :
+    EXECUTION_FAILED.includes(value) || value === 'failed' ? 'error' :
+    BUSINESS_NEUTRAL.includes(value) || value === 'unavailable' ? 'neutral' :
+    ['completed'].includes(value) ? 'success' : 'warning'
   return <Badge tone={tone}>{names[value] ?? value}</Badge>
 }
 
@@ -67,7 +79,10 @@ function Result({ result }: { result: TaskResult }) {
             <span className="call-status">业务 <Status value={call.business_status} /></span>
           </summary>
           <h3>调用参数</h3><Json value={call.arguments} />
-          <h3>执行结果</h3>{call.error_message && <p className="runtime-failure">{call.error_message}</p>}<Json value={call.result} />
+          <h3>执行结果</h3>
+          {call.error_message && <p className="runtime-failure">{call.error_message}</p>}
+          {call.business_code && <p className="muted">业务错误码 <code>{call.business_code}</code></p>}
+          <Json value={call.result} />
         </details>,
       )}</div> : <Empty title="该任务没有执行工具" />}
     </Panel>

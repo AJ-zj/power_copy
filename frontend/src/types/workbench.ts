@@ -54,14 +54,29 @@ export interface TraceEvent {
   [key: string]: unknown
 }
 
+// 04.9 三层状态分离
+// 执行层：工具跑通了吗？由 ToolExecutor 独占写入
+export type ExecutionStatus =
+  | 'ok'
+  | 'tool_not_found'
+  | 'invalid_json'
+  | 'invalid_arguments'
+  | 'execution_error'
+
+// 业务层：业务目标达成了吗？由 handler 声明
+// 注意 'empty' 是正常结果（没命中），不是错误
+export type BusinessStatus = 'success' | 'empty' | 'failed' | 'not_applicable'
+
 export interface ToolCall {
   name: string
   arguments: unknown
-  execution_status: string
-  business_status: string
+  execution_status: ExecutionStatus
+  business_status: BusinessStatus
+  business_code?: string | null
+  retryable?: boolean
   result: unknown
-  error_type?: string
-  error_message?: string
+  error_type?: string | null
+  error_message?: string | null
   latency_ms?: number
 }
 

@@ -23,6 +23,7 @@ from powercopy.data.query import (
 from powercopy.tools.builtin.policy import policy_detail_tool, policy_search_tool
 from powercopy.tools.builtin.policy_tools import (
     DB_PATH_ENV,
+    DEFAULT_SAFE_MESSAGE,
     SAFE_MESSAGES,
     binding_to_tool,
     build_live_registry,
@@ -33,6 +34,7 @@ from powercopy.tools.builtin.policy_tools import (
     resolve_db_path,
     wrap_handler,
 )
+from powercopy.tools.result import ToolBusinessError
 from powercopy.tools.executor import ToolExecutor
 from powercopy.tools.registry import ToolRegistry
 
@@ -169,8 +171,10 @@ class TestVersionSelection:
             "get_policy_detail",
             json.dumps({"policy_id": NDRC_POLICY_ID, "version": 99}),
         )
-        assert result.data["ok"] is False
-        assert result.data["error_code"] == "POLICY_VERSION_NOT_FOUND"
+        # 04.9：执行层成功，业务层失败
+        assert result.execution_status == "ok"
+        assert result.business_status == "failed"
+        assert result.business_code == "POLICY_VERSION_NOT_FOUND"
 
     def test_notice_warns_about_legal_validity(self, live_registry):
         executor = ToolExecutor(live_registry)
@@ -403,9 +407,12 @@ class TestReadOnlyAndInjection:
         result = executor.execute(
             "search_policy", '{"region": "", "keyword": "电力"}'
         )
-        assert result.success is True
-        assert result.data["ok"] is False
-        assert result.data["error_code"] == "POLICY_DB_NOT_FOUND"
+        # 04.9：数据库不可用是业务失败，不是执行崩溃
+        assert result.execution_status == "ok"
+        assert result.business_status == "failed"
+        assert result.business_code == "POLICY_DB_NOT_FOUND"
+        assert result.success is True  # 兼容属性：执行层未失败
+        assert result.data is None
         assert not (tmp_path / "absent.db").exists()
 
 
@@ -430,7 +437,8 @@ class TestPagination:
             "get_policy_detail",
             json.dumps({"policy_id": NDRC_POLICY_ID, "offset": 999999}),
         )
-        assert result.data["error_code"] == "BODY_OFFSET_OUT_OF_RANGE"
+        assert result.business_status == "failed"
+        assert result.business_code == "BODY_OFFSET_OUT_OF_RANGE"
 
     def test_paging_preserves_version(self, tmp_path):
         """用构造的长文档验证分页与固定版本，不写真实业务库。"""
@@ -680,8 +688,9 @@ class TestAgentRuntimeFullChain:
         assert result["status"] == "completed"
         tool_message = completions.requests[1]["messages"][-1]
         payload = json.loads(tool_message["content"])
-        assert payload["success"] is True, "结构化错误不应折叠为执行失败"
-        assert payload["data"]["error_code"] == "POLICY_VERSION_NOT_FOUND"
+        assert payload["execution_status"] == "ok", "业务失败不应折叠为执行失败"
+        assert payload["business_status"] == "failed"
+        assert payload["business_code"] == "POLICY_VERSION_NOT_FOUND"
         # 不得泄漏数据库内部信息
         assert "sqlite" not in tool_message["content"].lower()
         assert "Traceback" not in tool_message["content"]
@@ -723,20 +732,51 @@ class TestErrorMappingAndBudgets:
             raise PolicyQueryError("POLICY_DB_READ_ERROR")
 
         wrapped = wrap_handler(boom)
-        payload = wrapped(**{})
 
-        assert payload["ok"] is False
-        assert payload["error_code"] == "POLICY_DB_READ_ERROR"
-        assert payload["error_message"] == SAFE_MESSAGES["POLICY_DB_READ_ERROR"]
-        assert payload["retryable"] is False
+        # 04.9：wrap_handler 现在抛 ToolBusinessError，由 executor 转写状态
+        with pytest.raises(ToolBusinessError) as excinfo:
+            wrapped(**{})
+
+        assert excinfo.value.code == "POLICY_DB_READ_ERROR"
+        assert excinfo.value.message == SAFE_MESSAGES["POLICY_DB_READ_ERROR"]
+        assert excinfo.value.retryable is False
+
+    def test_business_error_mapped_by_executor(self, live_registry):
+        """端到端：PolicyQueryError → ToolBusinessError → business_status=failed。"""
+        from powercopy.tools.base import Tool
+
+        def boom(**kwargs):
+            raise PolicyQueryError("POLICY_DB_READ_ERROR")
+
+        registry = ToolRegistry()
+        registry.register(
+            Tool(
+                name="boom",
+                description="boom",
+                args_schema=SearchPolicyArgs,
+                handler=wrap_handler(boom),
+            )
+        )
+        result = ToolExecutor(registry).execute(
+            "boom", '{"region": "", "keyword": "x"}'
+        )
+
+        assert result.execution_status == "ok"
+        assert result.business_status == "failed"
+        assert result.business_code == "POLICY_DB_READ_ERROR"
+        assert result.error_message == SAFE_MESSAGES["POLICY_DB_READ_ERROR"]
 
     def test_unknown_code_falls_back_to_generic_message(self):
         def boom(**kwargs):
             raise PolicyQueryError("SOME_INTERNAL_CODE_WITH_DETAIL")
 
-        payload = wrap_handler(boom)(**{})
-        assert payload["error_code"] == "SOME_INTERNAL_CODE_WITH_DETAIL"
-        assert "SOME_INTERNAL" not in payload["error_message"]
+        # 04.9：wrap_handler 抛 ToolBusinessError，消息已脱敏
+        with pytest.raises(ToolBusinessError) as excinfo:
+            wrap_handler(boom)(**{})
+
+        assert excinfo.value.code == "SOME_INTERNAL_CODE_WITH_DETAIL"
+        assert "SOME_INTERNAL" not in excinfo.value.message
+        assert excinfo.value.message == DEFAULT_SAFE_MESSAGE
 
     def test_unexpected_exception_folded_by_executor(self, live_registry):
         from powercopy.tools.base import Tool

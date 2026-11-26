@@ -287,7 +287,14 @@ class TestToolResultShape:
     def test_to_dict(self, executor):
         result = executor.execute("echo", {"text": "hi"})
         payload = result.to_dict()
+        # 04.9：新增三层状态字段，旧字段保留以兼容既有调用方
         assert set(payload) == {
+            # 新增：三层状态
+            "execution_status",
+            "business_status",
+            "business_code",
+            "retryable",
+            # 兼容保留
             "tool_name",
             "success",
             "data",
@@ -297,6 +304,10 @@ class TestToolResultShape:
         }
         assert payload["tool_name"] == "echo"
         assert payload["success"] is True
+        assert payload["execution_status"] == "ok"
+        assert payload["business_status"] == "success"
+        assert payload["business_code"] is None
+        assert payload["retryable"] is False
         assert json.dumps(payload, ensure_ascii=False)
 
     def test_latency_includes_handler_time(self):

@@ -208,7 +208,13 @@ def trace_model_attempt(func):
 
 
 def trace_tool(func):
-    """观察工具执行，包括结构化失败结果。"""
+    """观察工具执行。
+
+    04.9：事件同时记录执行层与业务层状态。
+    `status` 保持旧语义（执行层），新增 `business_status` 与
+    `business_code` 以区分「工具跑通了但业务失败」与「工具崩溃」。
+    任务层状态不在此处，由 `trace_task` 的 finish 统一决定。
+    """
 
     @wraps(func)
     def wrapper(self, name, arguments):
@@ -236,6 +242,10 @@ def trace_tool(func):
 
             raise
 
+        # 执行层状态沿用旧字段名，保证既有断言与前端不变
+        execution_status = getattr(result, "execution_status", None)
+        business_status = getattr(result, "business_status", None)
+
         trace.record(
             "tool_execution",
             tool_name=name,
@@ -243,6 +253,13 @@ def trace_tool(func):
                 "success" if result.success else "failed"
             ),
             error_type=result.error_type,
+            execution_status=(
+                str(execution_status) if execution_status is not None else None
+            ),
+            business_status=(
+                str(business_status) if business_status is not None else None
+            ),
+            business_code=getattr(result, "business_code", None),
             duration_ms=round(
                 (perf_counter() - started) * 1000,
                 3
