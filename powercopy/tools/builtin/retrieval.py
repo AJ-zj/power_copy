@@ -35,15 +35,18 @@
 
 from __future__ import annotations
 
+from contextlib import closing
 from dataclasses import dataclass
+import json
 from os import environ
 from pathlib import Path
+import sqlite3
 from typing import Any, Callable
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from powercopy.rag.dense import DenseSearch, DenseSearchError
-from powercopy.rag.hybrid import HybridError, HybridRetriever
+from powercopy.rag.dense import DenseIndexConsistencyError, DenseSearch, DenseSearchError
+from powercopy.rag.hybrid import HybridError, HybridRetriever, RetrieverFailure
 from powercopy.rag.lexical import LexicalSearch, LexicalSearchError
 from powercopy.tools.base import Tool
 from powercopy.tools.result import (
@@ -78,8 +81,19 @@ SAFE_MESSAGES = {
     ),
     "RAG_RETRIEVAL_FAILED": "检索执行失败，请调整问题表述后重试。",
     "RAG_MANIFEST_MISSING": "检索索引的切片清单缺失，无法确认索引与政策的对应关系。",
+    "RAG_INDEX_INCONSISTENT": "检索索引与切片清单无法确认同源，请重建索引。",
 }
 DEFAULT_SAFE_MESSAGE = "检索失败，请调整参数后重试。"
+
+DEGRADATION_MESSAGES = {
+    "fingerprint_missing": "索引指纹缺失，无法确认检索路径同源。",
+    "single_path_failed": "唯一可用的检索路径执行失败。",
+    "both_paths_failed": "词法和向量检索均执行失败。",
+    "single_path_unconfigured": "本次仅使用可用的单条检索路径。",
+    "lexical_failed": "词法检索失败，已使用向量检索。",
+    "dense_failed": "向量检索失败，已使用词法检索。",
+}
+FAILED_DEGRADATIONS = frozenset({"fingerprint_missing", "single_path_failed", "both_paths_failed"})
 
 
 @dataclass(frozen=True)
@@ -110,7 +124,7 @@ class SearchPolicyEvidenceInput(BaseModel):
     防止模型尝试传入路径类参数。
     """
 
-    model_config = ConfigDict(strict=True, extra="forbid")
+    model_config = ConfigDict(strict=True, extra="forbid", str_strip_whitespace=True)
 
     query: str = Field(
         min_length=1,
@@ -195,27 +209,39 @@ class PolicyEvidenceService:
             )
             raise _business_error("RAG_INDEX_UNAVAILABLE")
 
-        lexical: LexicalSearch | None = None
-        dense: DenseSearch | None = None
-        problems: list[str] = []
-
         try:
-            lexical = LexicalSearch(self.paths.lexical_db)
-        except LexicalSearchError as exc:
-            problems.append(f"lexical: {exc}")
+            manifest = json.loads(self.paths.manifest.read_text(encoding="utf-8"))
+            manifest_sha = manifest["manifest_sha256"]
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            raise _business_error("RAG_INDEX_INCONSISTENT") from exc
+        if not isinstance(manifest_sha, str) or not manifest_sha.strip():
+            raise _business_error("RAG_INDEX_INCONSISTENT")
 
+        lexical = None
+        try:
+            lexical_search = LexicalSearch(self.paths.lexical_db)
+            lexical_sha = lexical_search.describe().get("manifest_sha256")
+        except (LexicalSearchError, sqlite3.Error):
+            pass
+        else:
+            if lexical_sha != manifest_sha:
+                raise _business_error("RAG_INDEX_INCONSISTENT")
+            lexical = lexical_search
+
+        dense = None
         try:
             dense = DenseSearch(
                 self.paths.dense_npz,
                 manifest_path=self.paths.manifest,
                 embedder=self.embedder,
             )
-        except DenseSearchError as exc:
-            problems.append(f"dense: {exc}")
+        except DenseIndexConsistencyError as exc:
+            raise _business_error("RAG_INDEX_INCONSISTENT") from exc
+        except DenseSearchError:
+            pass
 
         if lexical is None and dense is None:
             self._available = False
-            self._unavailable_reason = "；".join(problems)
             raise _business_error("RAG_INDEX_UNAVAILABLE")
 
         # allow_degrade=True 让单路故障不至于完全不可用，
@@ -251,91 +277,53 @@ class PolicyEvidenceService:
                 "detail": "切片清单缺失，无法校验",
             }
 
-        import json as _json
-        import sqlite3
-
         try:
-            manifest = _json.loads(
+            manifest = json.loads(
                 self.paths.manifest.read_text(encoding="utf-8")
             )
-        except (OSError, ValueError) as exc:
+            if not isinstance(manifest["chunks"], list):
+                raise TypeError
+            indexed = {
+                (chunk["policy_id"], int(chunk["version"]), chunk["content_sha256"])
+                for chunk in manifest["chunks"]
+            }
+        except (OSError, ValueError, KeyError, TypeError):
             return {
                 "fresh": False,
                 "status": "manifest_unreadable",
-                "detail": f"切片清单无法读取：{exc}",
+                "detail": "切片清单无法读取，无法校验索引。",
             }
-
-        indexed = {
-            (c["policy_id"], int(c["version"]), c.get("content_sha256") or "")
-            for c in manifest.get("chunks") or []
-        }
-        indexed_versions = {}
-        for policy_id, version, content_sha in indexed:
-            indexed_versions.setdefault(policy_id, set()).add(
-                (version, content_sha)
-            )
 
         try:
             # 只读打开，绝不写库
-            conn = sqlite3.connect(
+            with closing(sqlite3.connect(
                 self.db_path.as_uri() + "?mode=ro", uri=True, timeout=5
-            )
-            try:
-                conn.row_factory = sqlite3.Row
+            )) as conn:
                 conn.execute("PRAGMA query_only=ON")
-                # content_sha256 在 policy_versions 上（业务哈希），
-                # 不在 policy_documents 上
-                rows = conn.execute(
-                    """
-                    SELECT policy_id, version, content_sha256
-                    FROM policy_versions
-                    """
-                ).fetchall()
-            finally:
-                conn.close()
-        except sqlite3.Error as exc:
+                rows = conn.execute("""
+                    SELECT policy_id, version, content_sha256 FROM policy_versions
+                    ORDER BY policy_id, version ASC
+                """).fetchall()
+        except sqlite3.Error:
             return {
                 "fresh": False,
                 "status": "db_read_error",
-                "detail": f"政策库读取失败：{exc}",
+                "detail": "政策库读取失败，无法校验索引。",
             }
 
-        current = {}
-        for row in rows:
-            current.setdefault(row["policy_id"], set()).add(
-                (int(row["version"]), row["content_sha256"] or "")
-            )
-
-        # 索引里有、库里没有 → 索引过期（政策被删除或重建）
-        stale_policies = []
-        for policy_id, entries in indexed_versions.items():
-            if policy_id not in current:
-                stale_policies.append(policy_id)
-                continue
-            if not entries & current[policy_id]:
-                stale_policies.append(policy_id)
-
-        # 库里有更新的版本，索引没有 → 索引过期
-        newer_available = []
-        for policy_id, entries in current.items():
-            max_version = max(v for v, _ in entries)
-            indexed_max = max(
-                (v for v, _ in indexed_versions.get(policy_id, set())),
-                default=0,
-            )
-            if indexed_max < max_version:
-                newer_available.append(policy_id)
-
-        if stale_policies or newer_available:
+        latest = {row[0]: row for row in rows}
+        stale = {row[0] for row in indexed.difference(rows)}
+        missing = {row[0] for row in latest.values() if row not in indexed}
+        if stale or missing:
             parts = []
-            if stale_policies:
-                parts.append(f"索引中有 {len(stale_policies)} 个政策与库不符")
-            if newer_available:
-                parts.append(f"库中有 {len(newer_available)} 个政策存在更新版本")
+            if stale:
+                parts.append(f"索引中有 {len(stale)} 个政策的版本或内容与库不符")
+            if missing:
+                parts.append(f"索引未覆盖 {len(missing)} 个政策的当前版本")
             return {
                 "fresh": False,
                 "status": "stale",
-                "detail": "；".join(parts),
+                "detail": "。".join(parts),
             }
 
         return {
@@ -346,7 +334,7 @@ class PolicyEvidenceService:
 
     # ---- 检索 ----
 
-    def search(self, query: str, top_k: int) -> dict:
+    def search(self, query: str, top_k: int) -> ToolOutcome:
         """执行检索并组装工具输出。"""
 
         hybrid = self._build_hybrid()
@@ -358,10 +346,12 @@ class PolicyEvidenceService:
                 dense_candidate_k=max(top_k * 2, 10),
                 final_top_k=top_k,
             )
-        except (HybridError, LexicalSearchError, DenseSearchError) as exc:
-            raise _business_error(
-                "RAG_RETRIEVAL_FAILED", f"检索执行失败：{exc}"
-            ) from exc
+        except RetrieverFailure as exc:
+            raise _business_error("RAG_RETRIEVAL_FAILED") from exc
+        except HybridError as exc:
+            raise _business_error("RAG_INDEX_INCONSISTENT") from exc
+        except (LexicalSearchError, DenseSearchError, sqlite3.Error) as exc:
+            raise _business_error("RAG_RETRIEVAL_FAILED") from exc
 
         freshness = self.check_index_freshness()
 
@@ -374,7 +364,7 @@ class PolicyEvidenceService:
             "retrieval_mode": outcome.match_mode,
             "index_fingerprint": self._index_fingerprint(outcome),
             "degraded_status": outcome.degraded,
-            "degraded_detail": outcome.degraded_detail,
+            "degraded_detail": DEGRADATION_MESSAGES.get(outcome.degraded),
             "consistency_status": outcome.consistency_status,
             "index_freshness": freshness["status"],
             "index_freshness_detail": freshness["detail"],
@@ -385,6 +375,16 @@ class PolicyEvidenceService:
         }
 
         # 业务状态判定
+        if outcome.degraded in FAILED_DEGRADATIONS:
+            return ToolOutcome(
+                data=payload,
+                business_status=BusinessStatus.FAILED,
+                business_code=(
+                    "RAG_INDEX_INCONSISTENT" if outcome.degraded == "fingerprint_missing"
+                    else "RAG_RETRIEVAL_FAILED"
+                ),
+            )
+
         if outcome.returned == 0:
             return ToolOutcome(
                 data=payload,
@@ -460,7 +460,7 @@ class PolicyEvidenceService:
         if outcome.degraded is not None:
             parts.append(
                 f"⚠ 降级模式（{outcome.degraded}）："
-                f"本次不是完整混合检索。{outcome.degraded_detail or ''}"
+                f"{DEGRADATION_MESSAGES.get(outcome.degraded, '完整混合检索不可用。')}"
             )
 
         if not freshness["fresh"]:
@@ -517,7 +517,9 @@ def register_evidence_tool(
 
 
 __all__ = [
+    "DEGRADATION_MESSAGES",
     "DEFAULT_TOP_K",
+    "FAILED_DEGRADATIONS",
     "INDEX_DIR_ENV",
     "MAX_QUERY_CHARS",
     "MAX_TEXT_CHARS",

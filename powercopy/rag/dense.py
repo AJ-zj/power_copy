@@ -69,6 +69,10 @@ class DenseSearchError(Exception):
     pass
 
 
+class DenseIndexConsistencyError(DenseSearchError):
+    """The index and its source manifest cannot be established as compatible."""
+
+
 @dataclass(frozen=True)
 class DenseHit:
     """单条向量检索结果。"""
@@ -390,10 +394,11 @@ def build_dense_index(
 
     if manifest.get("schema") != "policy-chunk-manifest-v1":
         raise DenseSearchError(f"清单 schema 不支持：{manifest.get('schema')}")
-
     chunks = manifest.get("chunks") or []
     if not chunks:
         raise DenseSearchError("清单中没有切片")
+    if not manifest.get("manifest_sha256"):
+        raise DenseIndexConsistencyError("切片清单缺少指纹，请重建索引")
 
     if index_path.exists() and not overwrite:
         raise DenseSearchError(f"索引已存在：{index_path}")
@@ -573,7 +578,7 @@ class DenseSearch:
                 self._vectors = data["vectors"]
                 self._chunk_ids = [str(x) for x in data["chunk_ids"]]
                 self._meta = json.loads(str(data["meta_json"]))
-        except ValueError as exc:
+        except (OSError, ValueError) as exc:
             raise DenseSearchError(
                 "索引格式不受支持（可能由旧版本生成）。"
                 "出于安全考虑不允许反序列化 pickle 内容，请重建索引："
@@ -585,15 +590,23 @@ class DenseSearch:
                 f"索引缺少必需字段：{exc}。请重建索引。"
             ) from exc
 
-        _validate_matrix(self._vectors, EMBEDDING_DIM)
+        if not isinstance(self._meta, dict) or self._meta.get("schema") != SCHEMA_VERSION:
+            raise DenseSearchError("向量索引版本不受支持，请重建索引")
+        try:
+            manifest = json.loads(self.manifest_path.read_text(encoding="utf-8"))
+            manifest_sha = manifest.get("manifest_sha256")
+            self._by_id = {c["chunk_id"]: c for c in manifest["chunks"]}
+        except (OSError, ValueError, AttributeError, KeyError, TypeError) as exc:
+            raise DenseIndexConsistencyError("无法验证切片清单，请重建索引") from exc
 
-        manifest = json.loads(self.manifest_path.read_text(encoding="utf-8"))
-        self._by_id = {c["chunk_id"]: c for c in manifest["chunks"]}
-
-        if self._meta.get("manifest_sha256") != manifest.get("manifest_sha256"):
-            raise DenseSearchError(
+        if not manifest_sha or not self._meta.get("manifest_sha256"):
+            raise DenseIndexConsistencyError("向量索引或切片清单缺少指纹，请重建索引")
+        if self._meta["manifest_sha256"] != manifest_sha:
+            raise DenseIndexConsistencyError(
                 "索引与切片清单不匹配（manifest_sha256 不同），请重建索引"
             )
+
+        _validate_matrix(self._vectors, EMBEDDING_DIM)
 
         if len(self._chunk_ids) != self._vectors.shape[0]:
             raise DenseSearchError("索引内部不一致：chunk_ids 与向量行数不符")
@@ -660,7 +673,10 @@ class DenseSearch:
         """
 
         # 触发加载以拿到真实指纹
-        embedder._ensure_loaded()  # noqa: SLF001
+        try:
+            embedder._ensure_loaded()  # noqa: SLF001
+        except EmbeddingError as exc:
+            raise DenseSearchError("本地查询模型不可用。") from exc
         actual = embedder.model_fingerprint
 
         index_commit = str(self._meta.get("model_commit") or "")
@@ -708,10 +724,16 @@ class DenseSearch:
                 f"编码器={actual.get('pooling')}"
             )
 
-        if bool(self._meta.get("normalized")) is not bool(
-            actual.get("normalized")
-        ):
+        if self._meta.get("normalized") is not actual.get("normalized"):
             problems.append("归一化方式不一致")
+
+        for key, label in (
+            ("max_tokens", "Token 长度限制"),
+            ("encode_mode_document", "文档编码方式"),
+            ("query_instruction", "查询指令"),
+        ):
+            if key not in self._meta or self._meta[key] != actual.get(key):
+                problems.append(f"{label}不一致")
 
         if problems:
             raise DenseSearchError(

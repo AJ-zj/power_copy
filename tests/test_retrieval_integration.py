@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -33,6 +34,7 @@ from powercopy.rag.dense import (
 )
 from powercopy.rag.embedding import BGEEmbedder, EmbeddingError
 from powercopy.rag.hybrid import HybridError, HybridOutcome, HybridRetriever
+from powercopy.rag.lexical import build_index
 from powercopy.tools.builtin.policy_tools import build_live_registry
 from powercopy.tools.builtin.retrieval import (
     DEFAULT_TOP_K,
@@ -325,6 +327,15 @@ class TestDenseModelConsistency:
         with pytest.raises(DenseSearchError, match="池化方式不一致"):
             search.check_model_consistency(embedder)
 
+    def test_query_instruction_mismatch_rejected(self, tmp_path, embedder):
+        manifest = _write_manifest(tmp_path, [_chunk("c1", "电力市场")])
+        index = tmp_path / "d.npz"
+        build_dense_index(manifest, index, embedder=embedder)
+        search = DenseSearch(index, manifest_path=manifest, embedder=embedder)
+        search._meta["query_instruction"] = "不同的查询前缀"
+        with pytest.raises(DenseSearchError, match="查询指令不一致"):
+            search.search("电力市场")
+
     def test_missing_identity_rejected(self, tmp_path, embedder):
         manifest = _write_manifest(tmp_path, [_chunk("c1", "电力市场")])
         index = tmp_path / "d.npz"
@@ -394,6 +405,18 @@ class TestNpzSafety:
         with pytest.raises(DenseSearchError, match="缺少必需字段"):
             DenseSearch(index, manifest_path=manifest, verify_model=False)
 
+    def test_unsupported_schema_rejected_even_with_unicode_ids(self, tmp_path):
+        manifest = _write_manifest(tmp_path, [_chunk("c1", "电力市场")])
+        index = tmp_path / "old.npz"
+        np.savez_compressed(
+            index,
+            vectors=np.eye(1, 512, dtype=np.float32),
+            chunk_ids=np.asarray(["c1"], dtype=np.str_),
+            meta_json=np.asarray(json.dumps({"schema": "policy-dense-index-v1"})),
+        )
+        with pytest.raises(DenseSearchError, match="索引版本不受支持"):
+            DenseSearch(index, manifest_path=manifest, verify_model=False)
+
 
 # ==========================================================================
 # 4. 离线加载
@@ -436,6 +459,60 @@ class TestOfflineLoading:
         ):
             assert key in fp
             assert fp[key] not in (None, "")
+
+    def test_resolved_snapshot_binds_model_and_tokenizer(self, tmp_path, monkeypatch):
+        import huggingface_hub
+        import transformers
+
+        cache = tmp_path / "model-cache"
+        snapshot = cache / "snapshots" / ("a" * 40)
+        calls = []
+        tokenizer = SimpleNamespace()
+        model = SimpleNamespace(eval=lambda: None, to=lambda _: None)
+
+        def resolve(model_name, **options):
+            calls.append(("resolve", model_name, options))
+            return str(snapshot)
+
+        def load_tokenizer(path, **options):
+            calls.append(("tokenizer", path, options))
+            return tokenizer
+
+        def load_model(path, **options):
+            calls.append(("model", path, options))
+            return model
+
+        monkeypatch.setattr(huggingface_hub, "snapshot_download", resolve)
+        monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", load_tokenizer)
+        monkeypatch.setattr(transformers.AutoModel, "from_pretrained", load_model)
+        encoder = BGEEmbedder(cache_dir=cache, revision="integration")
+        monkeypatch.setattr(encoder, "_fingerprint_tokenizer", lambda item: "fingerprint")
+        assert encoder.model_fingerprint["commit"] == ""
+        encoder._ensure_loaded()
+        assert len(calls) == 3
+        assert calls[0][2]["cache_dir"] == str(cache)
+        assert calls[0][2]["revision"] == "integration"
+        assert all(options["local_files_only"] is True for _, _, options in calls)
+        assert all(path == snapshot for _, path, _ in calls[1:])
+        assert all(options["trust_remote_code"] is False for _, _, options in calls[1:])
+        assert calls[-1][2]["use_safetensors"] is True
+        assert encoder.model_fingerprint["commit"] == snapshot.name
+
+
+def test_equal_size_tokenizers_with_different_ids_are_incompatible():
+    def tokenizer(vocab):
+        content = json.dumps({"model": {"vocab": vocab}})
+        return SimpleNamespace(
+            backend_tokenizer=SimpleNamespace(to_str=lambda: content),
+            special_tokens_map={"cls_token": "[CLS]"},
+            padding_side="right",
+            truncation_side="right",
+            model_max_length=512,
+        )
+
+    first = tokenizer({"[CLS]": 0, "电": 1, "力": 2})
+    second = tokenizer({"[CLS]": 0, "电": 2, "力": 1})
+    assert BGEEmbedder._fingerprint_tokenizer(first) != BGEEmbedder._fingerprint_tokenizer(second)
 
 
 # ==========================================================================
@@ -597,6 +674,68 @@ class TestEvidenceToolLive:
         before = DB.read_bytes()
         service.search("电力市场", 3)
         assert DB.read_bytes() == before
+
+
+class TestEvidenceToolGuards:
+    @pytest.mark.parametrize("lexical_sha", ["", "other-manifest"])
+    def test_incompatible_artifact_rejects_fusion(self, tmp_path, lexical_sha):
+        paths = RetrievalPaths.resolve(tmp_path)
+        _write_manifest(tmp_path, [_chunk("c1", "电力市场")])
+        build_index(paths.manifest, paths.lexical_db)
+        with sqlite3.connect(paths.lexical_db) as connection:
+            connection.execute(
+                "UPDATE meta SET value = ? WHERE key = 'manifest_sha256'",
+                (lexical_sha,),
+            )
+        paths.dense_npz.touch()
+        evidence = PolicyEvidenceService(paths)
+        with pytest.raises(Exception, match="RAG_INDEX_INCONSISTENT"):
+            evidence.search("电力市场", 3)
+
+    def test_dense_manifest_conflict_rejects_fusion(self, tmp_path):
+        paths = RetrievalPaths.resolve(tmp_path)
+        _write_manifest(tmp_path, [_chunk("c1", "电力市场")])
+        build_index(paths.manifest, paths.lexical_db)
+        np.savez_compressed(
+            paths.dense_npz,
+            vectors=np.eye(1, 512, dtype=np.float32),
+            chunk_ids=np.asarray(["c1"], dtype=np.str_),
+            meta_json=np.asarray(json.dumps({
+                "schema": "policy-dense-index-v2",
+                "manifest_sha256": "other-manifest",
+            })),
+        )
+        evidence = PolicyEvidenceService(paths)
+        with pytest.raises(Exception, match="RAG_INDEX_INCONSISTENT"):
+            evidence.search("电力市场", 3)
+
+    @pytest.mark.parametrize("error", [None, RuntimeError("sensitive C:/internal/path")])
+    def test_retrieval_failure_differs_from_normal_empty(self, tmp_path, monkeypatch, error):
+        service = PolicyEvidenceService(RetrievalPaths.resolve(tmp_path))
+        hybrid = HybridRetriever(
+            FakeRetriever(error=error), FakeRetriever(error=error), allow_degrade=True
+        )
+        monkeypatch.setattr(service, "_build_hybrid", lambda: hybrid)
+        result = service.search("电力市场", 3)
+        expected = BusinessStatus.EMPTY if error is None else BusinessStatus.FAILED
+        assert result.business_status is expected
+        assert "C:/internal/path" not in json.dumps(result.data)
+
+    def test_stale_latest_version_content_with_matching_older_version(self, tmp_path):
+        paths = RetrievalPaths.resolve(tmp_path)
+        _write_manifest(tmp_path, [
+            _chunk("c1", "电力市场", version=1),
+            _chunk("c2", "较新市场文件", version=2),
+        ])
+        db_path = tmp_path / "policy.db"
+        with sqlite3.connect(db_path) as connection:
+            connection.execute("CREATE TABLE policy_versions(policy_id, version, content_sha256)")
+            connection.executemany("INSERT INTO policy_versions VALUES (?, ?, ?)", [
+                ("p1", 1, "0" * 64),
+                ("p1", 2, "1" * 64),
+            ])
+        service = PolicyEvidenceService(paths, db_path=db_path)
+        assert service.check_index_freshness()["status"] == "stale"
 
 
 # ==========================================================================

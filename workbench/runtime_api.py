@@ -20,6 +20,8 @@ from powercopy.core.trace import get_current_trace, record_trace_event
 from powercopy.tools.builtin.policy_tools import build_live_registry
 from powercopy.tools.executor import ToolExecutor
 
+from workbench.retrieval_api import resolve_workbench_rag_dir
+
 
 SYSTEM_PROMPT = (
     "你是 PowerCopy V2 的在库政策研究助手。使用已注册的政策工具核对事实，"
@@ -340,7 +342,7 @@ def execute_run(request: RunRequest, project_root: Path) -> dict:
     else:
         client = LocalPolicyLLM(request)
 
-    registry = build_live_registry(database_path(project_root))
+    registry = build_live_registry(database_path(project_root), rag_dir=resolve_workbench_rag_dir(project_root))
     observed_llm = ObservedLLM(client)
     executor = ObservedToolExecutor(registry)
     agent = Agent(observed_llm, registry, SYSTEM_PROMPT, **limits)
@@ -403,7 +405,7 @@ def build_runtime_router(project_root: Path) -> APIRouter:
 
     @router.get("/tools")
     def tools():
-        registry = build_live_registry(database_path(project_root))
+        registry = build_live_registry(database_path(project_root), rag_dir=resolve_workbench_rag_dir(project_root))
         limits = {
             "search_policy": ["本地 SQLite 只读", "字面关键词匹配", "每次最多 10 条"],
             "get_policy_detail": ["本地 SQLite 只读", "每段最多 8,000 字符", "支持指定已观测版本"],

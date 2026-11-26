@@ -1,8 +1,8 @@
 # PROJECT_STATE
 
-**最后更新**：2026-11-26（V2.1 MVP-01 检索集成完成后）
-**当前阶段**：阶段05 检索链路完成并已接入 Agent（V2.1 MVP-01）；下一步 MVP-02 政策研究与证据包
-**代码基线**：1189 项测试通过
+**最后更新**：2026-11-27（MVP-01-F 前端集成验收）
+**当前阶段**：MVP-01 后端与 RAG Studio 已完成离线联调，待 ChatGPT 最终验收
+**代码基线**：1211 项测试通过
 
 ---
 
@@ -26,11 +26,14 @@
 | 05-A | BM25 词法检索基线 | ✅ 已验收 | 81 |
 | 05-B | Dense 向量检索 | ✅ 已验收 | 46 |
 | 05.5-A | Hybrid 混合检索（RRF） | ✅ 已验收 | 68 |
-| MVP-01 | 检索集成（接入 Agent） | ✅ **本次完成** | 55 |
+| MVP-01 | 检索集成（接入 Agent） | ✅ 已完成 | 55 |
+| MVP-01-F | RAG Studio 前端与接口、检索安全审查 | ✅ 已联调，待最终验收 | +22 |
 
-**测试总数**：1189 passed
+**测试总数**：1211 passed
 
 ---
+
+MVP-01-F 验收覆盖三路真实检索、候选原文、开发评测、无命中、缺索引和 Agent 工具链路。 [API 契约与验收记录](contracts/mvp01-retrieval-api.md)
 
 ## 二、05.1-B 交付摘要（Embedding）
 
@@ -165,7 +168,7 @@ python scripts/eval_retrieval.py --rebuild
 
 - **证据充分性判断仍缺失**（候选 ≠ 有证据），分配至 MVP-02
 - RRF 不保证每个查询都优于单路（分类型指标持平）
-- 前端类型检查未执行（本机无 Node）
+- RAG Studio TypeScript、生产构建及浏览器验收已通过。详见 [MVP-01-F 契约与验收](contracts/mvp01-retrieval-api.md)
 
 ---
 
@@ -341,19 +344,18 @@ nDCG@10    : 0.4231
 
 | 项 | 状态 | 方式 |
 |---|---|---|
-| 全量回归 | ✅ 1189 passed | `python -m pytest tests -q` |
+| 全量回归 | ✅ 1211 passed | `python -m pytest tests -q` |
 | 04.9 验收 | ✅ 11/11 | `python scripts/check_tool_result_semantics.py` |
 | 05.1 验收 | ✅ 10/10 | `python scripts/check_chunking.py` |
 | 源码未越界改动 | ✅ | 19 个核心模块哈希记录 |
 | 数据库结构未变 | ✅ | 4 张表结构一致 |
-| 新增依赖 | ✅ 0 | requirements.txt 未改 |
+| 运行依赖 | 显式声明已有 NumPy | 前端锁定依赖保持原版本 |
 
 ### 未验证
 
 - ❌ 模型 `response_format` / `strict` / `/v1/responses` / `stream` 支持
 - ❌ 真实政策 PDF 解析质量（无授权样本）
-- ❌ 前端 TypeScript 类型检查（环境无 node/pnpm）
 
 ---
 
-**下一步**：等待项目负责人验收 04.9，确认后进入阶段05 下一项任务。
+**下一步**：等待 ChatGPT 最终验收 MVP-01。
