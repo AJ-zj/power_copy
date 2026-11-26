@@ -1,0 +1,15 @@
+# 本地 Embedding 依赖（可选）
+#
+# 只有需要向量检索时才安装：
+#   pip install -r requirements-embedding.txt
+#
+# 注意：torch 必须用 CPU 版，否则会拉取 2.5GB 的 CUDA 版本。
+# 安装命令（推荐）：
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+#   pip install -r requirements-embedding.txt
+#
+# 依赖体积：torch(cpu) ~800MB + transformers 依赖 ~100MB = 约 900MB
+# 模型文件：BAAI/bge-small-zh-v1.5 约 91MB（首次运行自动下载到 storage/models）
+
+torch>=2.0
+transformers>=4.40
