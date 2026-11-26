@@ -27,6 +27,7 @@
 ┌──────────────────────────▼──────────────────────────────────┐
 │  数据中心  powercopy/data/ + powercopy/rag/                  │
 │  Sources → Fetcher → Parser/PDF → Store → Query → Chunking  │
+│        → Lexical / Dense → Hybrid（RRF）→ 证据溯源            │
 └──────────────────────────┬──────────────────────────────────┘
                            │
 ┌──────────────────────────▼──────────────────────────────────┐
@@ -181,7 +182,37 @@ HttpFetcher ─-─► Raw JSON（Base64 + SHA-256 + 元数据）
         ▼                     ▼
   PolicyQueryService      Chunking
   （只读查询）              （切片索引）
+                              │
+                 ┌────────────┼────────────┐
+                 ▼            ▼            ▼
+            Lexical        Dense        （关系检索）
+          FTS5 trigram   BGE-small      待建设
+            + BM25       512 维
+                 │            │
+                 └─────┬──────┘
+                       ▼
+                  Hybrid（等权 RRF）
+                       │
+                       ▼
+                  排序后的切片 + 证据溯源
 ```
+
+### 检索层设计
+
+三路检索共用同一份切片清单（`manifest_sha256` 校验一致后才允许融合）。
+
+| 层 | 模块 | 依赖 | 特点 |
+|---|---|---|---|
+| 词法 | `rag/lexical.py` | 标准库 `sqlite3` | FTS5 trigram 字面短语 + BM25 打分；< 3 字符查询走 `instr` 回退 |
+| 向量 | `rag/embedding.py` + `rag/dense.py` | 可选 torch + transformers | BGE-small-zh-v1.5，512 维，NumPy 精确余弦；索引指纹校验 |
+| 混合 | `rag/hybrid.py` | 无新增 | 等权 RRF，只融合排名不融合分数；降级状态显式 |
+
+**为什么不用向量数据库**：26 个切片 × 512 维 = 52 KB，NumPy 矩阵乘法实测 5.7 μs，引入外部服务是过度设计。
+
+**为什么 RRF 不做分数相加**：BM25 分值为负且随语料变化，余弦相似度在 -1..1，两者量纲不可比。RRF 只用排名，避开该问题。
+
+**已知边界**：向量检索必然返回 Top-K，相似度高低**不代表**证据充分。当前未设阈值，`notice` 字段每次声明这一点。
+
 
 ### 存储三元组
 
@@ -320,7 +351,11 @@ class HttpFetcher:
 | `core/` | Agent 运行时 | ✅ 完整 |
 | `tools/` | 工具系统 | ✅ 完整 |
 | `data/` | 数据中心 | ✅ 完整 |
-| `rag/` | 切片 | ✅ 5.1 完成 |
+| `rag/chunking.py` | 切片 | ✅ 5.1 完成 |
+| `rag/embedding.py` | 本地 Embedding | ✅ 5.1-B 完成 |
+| `rag/lexical.py` | 词法检索 | ✅ 5-A 完成 |
+| `rag/dense.py` | 向量检索 | ✅ 5-B 完成 |
+| `rag/hybrid.py` | 混合融合 | ✅ 5.5-A 完成 |
 | `api/` | FastAPI 入口 | ✅ 基础 |
 | `memory/` | 记忆 | 🚧 骨架 |
 | `context/` | 上下文工程 | 🚧 骨架 |
@@ -333,4 +368,6 @@ class HttpFetcher:
 
 - [数据中心详解](Data-Center) — 深入每个数据模块
 - [文档切片](Chunking) — RAG 切片设计
-- [测试与验收](Testing) — 795 项测试怎么组织的
+- [ADR 索引](adr/) — 架构决策记录（ADR-001 ~ ADR-008）
+- [检索实验报告](review/stage05.5a-hybrid-retrieval.md) — 词法/向量/混合三路对照
+- [测试与验收](Testing) — 1122 项测试怎么组织的

@@ -29,14 +29,14 @@ def test_can_add_system_user_assistant_messages():
 def test_second_round_can_use_first_round_information():
     """验收 2：第二轮对话能够利用第一轮提供的信息。"""
     history = Messages("你是售电文案助手，回答简洁。")
-    history.add_user("我叫张建，负责江西园区的售电业务。")
-    history.add_assistant("好的张建，我记住了您在江西园区负责售电业务。")
+    history.add_user("我叫李明，负责江西园区的售电业务。")
+    history.add_assistant("好的李明，我记住了您在江西园区负责售电业务。")
     history.add_user("我刚才说我负责哪个省的业务？")
 
     messages = history.get_messages()
 
     # 第一轮的用户信息必须仍在历史里，模型才能据此回答
-    assert any("张建" in item["content"] for item in messages)
+    assert any("李明" in item["content"] for item in messages)
     assert any("江西园区" in item["content"] for item in messages)
 
     # 历史和顺序：system -> user -> assistant -> user

@@ -85,7 +85,7 @@ pnpm dev
 
 | 验收范围 | 实际结果 |
 | --- | --- |
-| 完整 V2 原有后端 | 795 项通过。Windows 下测试临时目录继承工作区访问权限，原有测试源码保持原样 |
+| 完整 V2 原有后端 | 1122 项通过。Windows 下测试临时目录继承工作区访问权限，原有测试源码保持原样 |
 | 运行时接口 | 8 项通过，覆盖真实工具注册、真实 SQLite 读取、任务 Trace、重试、异常脱敏和预算终止 |
 | HTTP 联调 | 11 项通过，包括指标对照 SQLite、政策搜索与详情、现有版本和报告、归档预览、离线重放、参数校验与拒绝政策写入。重放网络请求为 0，政策库 SHA-256 校验一致 |
 | 浏览器 | 13 项通过，包括 1440、1366 和 1280 像素宽度下的页面，加载、空结果、404、连接故障与重试，以及 Agent 工具结果、Trace 和新配色 |
@@ -139,3 +139,5 @@ node .\scripts\check_workbench_ui.cjs
 | 接口层 | `workbench/__init__.py`、`workbench/main.py`、`workbench/data_api.py`、`workbench/runtime_api.py`、`workbench/requirements.txt` |
 | 启动与验收 | `scripts/start-workbench-api.ps1`、`scripts/check_workbench.py`、`scripts/verify-workbench-runtime.py`、`scripts/check_workbench_ui.cjs` |
 | 文档与截图 | `docs/workbench.md`、`docs/workbench-test-results.json`、上表链接的 9 张 PNG |
+
+> `docs/workbench-test-results.json` 是 2026-11-26T10:40:50 的验证快照（当时 795 项），**保留为历史记录不再修改**。当前基线见 `README.md`（1122 项）。

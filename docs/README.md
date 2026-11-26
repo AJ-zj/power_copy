@@ -1,8 +1,8 @@
-# PowerCopy V2 文档中心
+﻿# PowerCopy V2 文档中心
 
 售电行业政策研究与文案生产的可追溯 Agent 运行时。
 
-**当前状态：795 项自动化测试全部通过**
+**当前状态：1122 项自动化测试全部通过**
 
 ---
 
@@ -16,6 +16,7 @@
 | 看数据中心怎么工作 | [数据中心详解](data-center.md) |
 | 用运营工作台 | [工作台使用](workbench.md) |
 | 了解 RAG 切片 | [文档切片](chunking.md) |
+| 了解检索与实验 | [检索报告](review/stage05.5a-hybrid-retrieval.md)、[ADR 索引](adr/) |
 | 跑测试与验收 | [测试与验收](testing.md) |
 | 知道哪些还没做 | [技术边界](limitations.md) |
 
@@ -31,12 +32,12 @@
 
 | 指标 | 数值 |
 |---|---|
-| 自动化测试 | 795 项，全部通过 |
-| 已验收阶段 | 阶段04（4.1–4.8）、阶段05（5.1） |
-| 数据层模块 | 12 个（采集/解析/版本/查询/PDF/切片） |
+| 自动化测试 | 1122 项，全部通过 |
+| 已验收阶段 | 阶段04（4.1–4.8、4.9）、阶段05（5.1、5.1-B、5-A、5-B、5.5-A） |
+| 数据层模块 | 17 个（采集/解析/版本/查询/PDF/切片/Embedding/词法/向量/混合） |
 | 工作台页面 | 10 个，全部对接真实数据 |
 | 真实政策样本 | 2 份（NDRC + NEA，含完整哈希链路） |
-| 新增第三方依赖 | 6 个（bs4、pypdf、fastapi、uvicorn、openai、pydantic） |
+| 新增第三方依赖 | 主依赖 6 个（bs4、pypdf、fastapi、uvicorn、openai、pydantic）；向量检索为可选依赖（torch+transformers，见 requirements-embedding.txt） |
 
 ---
 
@@ -48,14 +49,14 @@ PowerCopy-V2/
 │   ├── core/          # Agent 核心
 │   ├── tools/         # 工具系统
 │   ├── data/          # 数据中心
-│   ├── rag/           # 文档切片
+│   ├── rag/           # 切片 / Embedding / 词法 / 向量 / 混合检索
 │   ├── api/           # FastAPI 入口
 │   └── {memory,context,skills,agents,harness,evaluation}/   # 骨架
 ├── workbench/         # 工作台后端
 ├── frontend/          # 工作台前端（React 19 + Vite）
 ├── config/            # 解析配置
 ├── scripts/           # 采集/验收脚本
-├── tests/             # 795 项测试
+├── tests/             # 1122 项测试
 └── docs/              # 本文档中心
 ```
 
@@ -101,7 +102,7 @@ pip install -e ".[dev]" -e ".[api]" -r requirements.txt
 
 # 跑测试
 python -m pytest tests -q
-# 期望：795 passed
+# 期望：1122 passed
 
 # 起服务
 uvicorn workbench.main:app --port 8000
@@ -119,3 +120,30 @@ uvicorn workbench.main:app --port 8000
 - [文档切片](chunking.md) — RAG 切片与可追溯性
 - [测试与验收](testing.md) — 测试矩阵与验收脚本
 - [技术边界](limitations.md) — 明确未实现的范围
+
+## 阶段复审与决策
+
+- [项目状态](PROJECT_STATE.md) — 当前进度、已完成阶段、待决策事项
+- [变更日志](CHANGELOG.md) — 每个阶段交付内容与测试基线变化
+- [前四阶段技术基线复审](review/stage-01-04-review.md) — 阶段01-04 源码检查、技术对照、P0-P3 优先级
+- [Embedding 来源核实](review/embedding-source-assessment.md) — 平台端点探测与本机硬件核实
+- [05-A BM25 基线报告](review/stage05a-bm25-baseline.md) — 词法检索能力边界与基线指标
+- [05-A 修复报告](review/stage05a-fixes.md) — BM25 分数方向修正与指标审计
+- [05-B Dense Retrieval 报告](review/stage05b-dense-retrieval.md) — 向量检索实现、性能与对照实验
+- [05.5-A Hybrid Retrieval 报告](review/stage05.5a-hybrid-retrieval.md) — 等权 RRF 融合、三路对照与 H3 检验
+- [已知安全问题与技术债务](review/security-and-tech-debt.md) — **必读**：历史遗留、证据充分性缺失、语料规模限制
+- [阶段05 路线图](roadmap-stage05.md) — Adaptive Graph-enhanced RAG 分阶段计划
+
+### ADR（架构决策记录）
+
+- [ADR-001 LLM 接口协议](adr/ADR-001-llm-protocol.md) — 保持 Chat Completions
+- [ADR-002 ToolResult 语义](adr/ADR-002-tool-result-semantics.md) — **三段式状态拆分（已采纳并实施 04.9）**
+- [ADR-003 阶段05 检索方案](adr/ADR-003-retrieval-stage05.md) — 先 BM25 基线，向量延后（已采纳，向量来源见 ADR-006）
+- [ADR-004 SQLite WAL](adr/ADR-004-sqlite-wal.md) — 启用 WAL 提升并发读（提议，待核实版本）
+- [ADR-005 PDF 解析](adr/ADR-005-pdf-parsing.md) — 保持 pypdf，高级解析延后
+- [ADR-006 本地 Embedding](adr/ADR-006-local-embedding.md) — **BGE-small-zh-v1.5，512 维，CPU（已采纳并实施）**
+- [ADR-007 Dense Retrieval](adr/ADR-007-dense-retrieval.md) — **NumPy 精确检索，不引入向量数据库（已采纳并实施）**
+- [ADR-008 Hybrid RRF](adr/ADR-008-hybrid-rrf.md) — **等权 RRF 融合，rank_constant=60（已采纳并实施）**
+
+> ADR 的生命周期：**提议** → **已采纳** / **已废弃**。
+> 每条 ADR 都写明「重新评估触发条件」，满足条件时应重新审视该决策。

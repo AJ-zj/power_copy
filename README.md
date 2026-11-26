@@ -4,7 +4,7 @@
 
 PowerCopy V2 把「官方政策采集 → 解析清洗 → 版本化存储 → 切片索引 → Agent 检索生成」串成一条可审计的数据链路。每一个事实性输出都能回溯到原始网页字节、采集时间与内容哈希。
 
-当前状态：**795 项自动化测试全部通过**，前端运营工作台已接入真实数据中心。
+当前状态：**1122 项自动化测试全部通过**，前端运营工作台已接入真实数据中心，检索链路（词法 / 向量 / 混合）已就绪并有可复现的对照实验。
 
 ---
 
@@ -16,7 +16,7 @@ PowerCopy-V2/
 │   ├── core/          # Agent 核心：配置、消息、LLM、重试、预算、Trace、Agent Loop
 │   ├── tools/         # 工具契约、注册表、执行器、内置政策工具
 │   ├── data/          # 数据中心：数据源、采集、解析、清洗、版本化存储、PDF 摄取、查询
-│   ├── rag/           # 文档切片（chunking）
+│   ├── rag/           # RAG：切片、Embedding、词法检索、向量检索、混合融合
 │   ├── api/           # FastAPI 入口
 │   ├── memory/        # 短期与长期记忆（骨架）
 │   ├── context/       # 上下文工程（骨架）
@@ -28,7 +28,7 @@ PowerCopy-V2/
 ├── frontend/          # 运营工作台前端：React 19 + Vite + TypeScript
 ├── config/            # 解析配置、列表页选择器、审批模板
 ├── scripts/           # 采集、解析、入库、切片、验收脚本
-├── tests/             # 自动化测试（795 项）
+├── tests/             # 自动化测试（1122 项）
 ├── docs/              # 交付文档与页面截图
 ├── prompts/           # Prompt 版本管理
 ├── datasets/          # 评测数据集
@@ -88,7 +88,11 @@ Parser / PDF Ingest ──► PolicyDocument（严格数据契约）
 VersionedPolicyStore（身份 / 版本 / 观测三元组）
    │
    ├──► PolicyQueryService（只读查询，供 Agent 工具调用）
-   └──► Chunking（可追溯切片，供后续检索）
+   └──► Chunking（可追溯切片）
+          │
+          ├──► Lexical（FTS5 trigram + BM25 打分）
+          ├──► Dense（BGE-small-zh-v1.5，512 维，NumPy 精确检索）
+          └──► Hybrid（等权 RRF，rank_constant=60）
 ```
 
 ### 阶段04 · Data Center（1–8 节，已验收）
@@ -103,11 +107,29 @@ VersionedPolicyStore（身份 / 版本 / 观测三元组）
 | 4.6 | 政策工具接入真实数据 | `PolicyQueryService`、`search_policy` / `get_policy_detail` |
 | 4.8 | PDF 文档摄取 | `pdf_ingest`、逐页提取、物理页码映射、审核指纹 |
 
-### 阶段05 · RAG（1 节，已验收）
+### 阶段05 · RAG（已验收）
 
 | 节 | 内容 | 关键产出 |
 |---|---|---|
 | 5.1 | Document Chunking | `build_manifest`、精确字符区间、`manifest_sha256`、PDF 不跨页 |
+| 5.1-B | 本地 Embedding | `BGEEmbedder`、BGE-small-zh-v1.5、512 维、CLS 池化 + L2、禁止静默截断 |
+| 5-A | 词法检索基线 | `LexicalSearch`、FTS5 trigram + BM25、短查询 `instr` 回退、Recall@10 基线 |
+| 5-B | 向量检索 | `DenseSearch`、NumPy 精确余弦、索引指纹校验、向量缓存 |
+| 5.5-A | 混合检索 | `HybridRetriever`、等权 RRF、双路贡献可审计、降级状态显式 |
+
+检索效果（开发集 30 条，未做统计显著性检验）：
+
+| 指标 | Lexical | Dense | Hybrid |
+|---|---|---|---|
+| Recall@10 | 0.4231 | 0.8421 | **0.9190** |
+| MRR | 0.4231 | 0.7234 | **0.7811** |
+| Complete Evidence Rate | 0.4231 | 0.7692 | **0.8462** |
+| 证据不足用例正确返回空 | **4/4** | 0/4 | 0/4 |
+
+> 词法与向量**互补**：精确关键词词法 1.00 / 向量 0.83，语义改写词法 0.00 / 向量 0.83。
+> 混合检索取两路各自上限，不产生新的召回能力；**RRF 不判断证据充分性**。
+
+决策记录见 `docs/adr/`，实验报告见 `docs/review/`。
 
 ---
 
@@ -178,6 +200,27 @@ python -m scripts.query_policy --db <db> detail <policy_id> --version 1
 python -m scripts.build_chunks --db <db> --out storage/rag/chunks.json
 ```
 
+### 检索索引与评测
+
+```powershell
+# 构建词法索引（FTS5 trigram，零依赖）
+python scripts/eval_retrieval.py --rebuild
+
+# 构建向量索引（需要 requirements-embedding.txt）
+python -c "from powercopy.rag.dense import build_dense_index; print(build_dense_index('storage/rag/chunks.json','storage/rag/dense.npz',cache_path='storage/rag/embedding-cache.json'))"
+
+# 三路对照实验
+python scripts/compare_hybrid.py --json storage/rag/compare-hybrid.json
+python scripts/compare_hybrid.py --show-cases --sweep
+
+# 性能测量
+python scripts/bench_dense.py
+```
+
+> 向量检索依赖可选包：`pip install torch --index-url https://download.pytorch.org/whl/cpu` 后
+> `pip install -r requirements-embedding.txt`。未安装时相关测试自动 skip，其余功能不受影响。
+> 模型 `BAAI/bge-small-zh-v1.5`（91 MB，MIT）首次运行自动下载到 `storage/models/`（不入库）。
+
 ### 验收脚本
 
 每个阶段都有对应的离线验收脚本，全部不联网：
@@ -191,6 +234,7 @@ python scripts/check_pipeline.py --real     # 4.5
 python scripts/check_policy_tools.py        # 4.6
 python scripts/check_pdf_ingest.py          # 4.8
 python scripts/check_chunking.py            # 5.1
+python scripts/check_tool_result_semantics.py  # 4.9
 ```
 
 完整索引见 `scripts/README.md`。
@@ -253,13 +297,13 @@ python -m pytest tests -q
 ```
 
 ```text
-795 passed
+1122 passed
 ```
 
 | 测试组 | 覆盖 |
 |---|---|
 | core | LLM 客户端、重试、预算、Trace、Agent Loop、消息管理 |
-| tools | 工具定义、注册表、执行器、Function Calling |
+| tools | 工具定义、注册表、执行器、Function Calling、三层状态语义 |
 | data（4.1） | 数据契约、SQLite 读写、参数化 SQL |
 | data（4.2） | 数据源校验、域名白名单、错误分类、禁重定向 |
 | data（4.3） | 编码识别、CSS Selector、正文清洗、真实 HTML |
@@ -268,6 +312,10 @@ python -m pytest tests -q
 | data（4.6） | 真实库查询、只读、注入防护、Agent 全链路 |
 | data（4.8） | PDF 逐页提取、页码映射、审核指纹 |
 | rag（5.1） | 切片精确性、覆盖完整性、确定性与身份更新 |
+| rag（5.1-B） | 向量维度、L2 归一化、查询/文档前缀分离、Token 长度拒绝静默截断 |
+| rag（5-A） | 索引构建、BM25 排序方向、短查询回退、查询转义、只读保证、评测指标 |
+| rag（5-B） | 向量索引、数值校验、缓存命名空间隔离、索引指纹一致性 |
+| rag（5.5-A） | RRF 公式、双路累加、去重、同分稳定、异常降级、非法参数 |
 
 > 真实数据测试会自动跳过缺失的文件，因此首次 clone 后部分测试会 skip。要跑完整测试，需先执行一次采集或使用仓库自带的合成 PDF 样本。
 
@@ -295,11 +343,18 @@ python -m pytest tests -q
 
 ### 检索与生成
 
-- ❌ 向量数据库
-- ❌ BM25 / 混合检索
+- ❌ 向量数据库（当前 26 切片，NumPy 精确检索 5.7 μs，无需引入）
+- ❌ 重排模型 / Reranker
+- ❌ 政策关系推理（关系表未建设；当前只能检索承载关系表述的原文片段）
+- ❌ 证据充分性判断（向量检索必然返回 Top-K，相似度高低不等于有证据）
 - ❌ 增量索引（当前全量重建）
 - ❌ 页码级查询接口
+- ❌ 中文分词（不引入 jieba；trigram 按 3 字切分，短查询走 `instr` 回退）
+- ❌ 混合检索的加权 RRF / DBSF / Linear Fusion
 - ✅ 精确字符区间切片与 manifest 哈希
+- ✅ FTS5 trigram 字面短语检索与短查询回退
+- ✅ 本地 BGE-small 向量检索与索引指纹校验
+- ✅ 等权 RRF 混合融合与降级状态显式化
 
 ### 系统级
 

@@ -60,7 +60,7 @@ python -m pytest tests -q
 期望输出：
 
 ```text
-795 passed
+1122 passed
 ```
 
 > 部分依赖真实采集文件的测试会自动跳过。要跑完整测试，需先执行一次采集，或使用仓库自带的合成 PDF 样本。

@@ -3,7 +3,7 @@
 ## 总览
 
 ```text
-795 passed
+1122 passed
 ```
 
 | 测试组 | 文件 | 覆盖内容 |
@@ -185,7 +185,7 @@ AssertionError: {'run_id': '...', 'items': [...]} != {'run_id': '...', 'items': 
 1. `atomic_json()` 写文件用 `encoding='utf-8'`
 2. 测试读取用 `Path.read_text()` **未指定编码**
 3. Windows 默认 `cp936`（GBK）
-4. 报告里含中文路径 `C:\Users\张建\AppData\...`
+4. 报告里含中文路径 `C:\Users\<用户名>\AppData\...`
 5. GBK 读回 UTF-8 内容 → 乱码 → 对象不等
 
 **不是生产代码的 bug，是测试的环境假设问题。**

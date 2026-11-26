@@ -25,7 +25,7 @@ sys.path.insert(0, str(ROOT))
 from powercopy.core.message import Messages, Role  # noqa: E402
 
 INITIAL_PROMPT = "你是售电文案助手，回答尽量简短，不超过 40 字。"
-PROFILE = "我叫张建，负责江西省南昌市青山湖区的售电业务。"
+PROFILE = "我叫李明，负责江西省南昌市青山湖区的售电业务。"
 
 
 def check_add_messages() -> bool:

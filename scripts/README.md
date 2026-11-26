@@ -382,6 +382,59 @@ python -m scripts.build_chunks --max-chars 300 --overlap-chars 60
 
 字符区间为 Python Unicode 字符位置 `[start, end)`，不是字节坐标。PDF 正文用 `\n\f\n` 分页，`page` 为物理页码，切片不跨页。
 
+## check_tool_result_semantics.py
+
+```powershell
+python scripts/check_tool_result_semantics.py
+```
+
+工具结果三层状态语义验收（11 项）：执行状态、业务状态、任务状态分离，
+搜索无命中归为 `empty`，业务失败保留 `business_code`，执行崩溃不透传内部信息。
+
+## eval_retrieval.py
+
+```powershell
+python scripts/eval_retrieval.py --rebuild
+python scripts/eval_retrieval.py --json storage/rag/eval-baseline.json --show-cases
+```
+
+构建 FTS5 trigram 词法索引并跑评测（Recall@K / MRR / nDCG@K / Complete Evidence Rate）。
+输出逐题结果、证据溯源（policy_id / document_id / version / 字符偏移）与未命中原因分类。
+
+## compare_retrieval.py
+
+```powershell
+python scripts/compare_retrieval.py --json storage/rag/compare-v1.json
+```
+
+词法 vs 向量两路对照实验（05-B）。
+
+## compare_hybrid.py
+
+```powershell
+python scripts/compare_hybrid.py --json storage/rag/compare-hybrid.json
+python scripts/compare_hybrid.py --show-cases --sweep
+```
+
+三路对照实验（Lexical / Dense / Hybrid）。含 H3 假设检验、分类型指标、Bad Case、耗时。
+`--sweep` 输出候选深度与 rank_constant 敏感性（开发集调参结果，非最终配置）。
+
+## bench_dense.py
+
+```powershell
+python scripts/bench_dense.py
+```
+
+向量检索性能测量：模型冷启动、批量向量化、单条 query、相似度计算、内存峰值、索引占用。
+
+## sync_wiki.py
+
+```powershell
+python scripts/sync_wiki.py
+```
+
+把 `docs/*.md` 转成 GitHub Wiki 格式（链接改写、图片路径映射）。`docs/` 是唯一真相源。
+
 ## 通用约定
 
 - 验收脚本不写数据库、不改 `.env`。
