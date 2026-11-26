@@ -120,3 +120,5 @@ PowerCopy V2 是面向**售电行业**的政策研究 + 文案生产 Agent 运�
 4. 采集层：robots.txt 检查与合规的定时增量
 
 <!-- wiki sync test -->
+
+<!-- 验证 WIKI_TOKEN 配置 -->
