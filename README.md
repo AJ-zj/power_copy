@@ -4,7 +4,7 @@
 
 PowerCopy V2 把「官方政策采集 → 解析清洗 → 版本化存储 → 切片索引 → Agent 检索生成」串成一条可审计的数据链路。每一个事实性输出都能回溯到原始网页字节、采集时间与内容哈希。
 
-当前状态：**1122 项自动化测试全部通过**，前端运营工作台已接入真实数据中心，检索链路（词法 / 向量 / 混合）已就绪并有可复现的对照实验。
+当前状态：**1189 项自动化测试全部通过**，前端运营工作台已接入真实数据中心，检索链路（词法 / 向量 / 混合）已接入 Agent Runtime，可由模型通过 `search_policy_evidence` 工具实际调用。
 
 ---
 
@@ -28,7 +28,7 @@ PowerCopy-V2/
 ├── frontend/          # 运营工作台前端：React 19 + Vite + TypeScript
 ├── config/            # 解析配置、列表页选择器、审批模板
 ├── scripts/           # 采集、解析、入库、切片、验收脚本
-├── tests/             # 自动化测试（1122 项）
+├── tests/             # 自动化测试（1189 项）
 ├── docs/              # 交付文档与页面截图
 ├── prompts/           # Prompt 版本管理
 ├── datasets/          # 评测数据集
@@ -116,6 +116,7 @@ VersionedPolicyStore（身份 / 版本 / 观测三元组）
 | 5-A | 词法检索基线 | `LexicalSearch`、FTS5 trigram + BM25、短查询 `instr` 回退、Recall@10 基线 |
 | 5-B | 向量检索 | `DenseSearch`、NumPy 精确余弦、索引指纹校验、向量缓存 |
 | 5.5-A | 混合检索 | `HybridRetriever`、等权 RRF、双路贡献可审计、降级状态显式 |
+| MVP-01 | 检索集成 | `search_policy_evidence`、四状态一致性、模型指纹绑定、NPZ 安全 |
 
 检索效果（开发集 30 条，未做统计显著性检验）：
 
@@ -205,6 +206,9 @@ python -m scripts.build_chunks --db <db> --out storage/rag/chunks.json
 ```powershell
 # 构建词法索引（FTS5 trigram，零依赖）
 python scripts/eval_retrieval.py --rebuild
+
+# 构建向量索引（离线；旧格式必须 --rebuild）
+python scripts/build_dense_index.py --rebuild
 
 # 构建向量索引（需要 requirements-embedding.txt）
 python -c "from powercopy.rag.dense import build_dense_index; print(build_dense_index('storage/rag/chunks.json','storage/rag/dense.npz',cache_path='storage/rag/embedding-cache.json'))"
@@ -297,7 +301,7 @@ python -m pytest tests -q
 ```
 
 ```text
-1122 passed
+1189 passed
 ```
 
 | 测试组 | 覆盖 |

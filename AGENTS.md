@@ -166,8 +166,10 @@ ADR 存放位置：`docs/adr/`，命名 `ADR-NNN-短标题.md`。
 | 向量检索 | 本地 BGE-small-zh-v1.5（512 维，CPU） | ADR-006，已实施 |
 | 向量索引 | NumPy 精确检索（不引入向量数据库） | ADR-007，已实施 |
 | 混合检索 | 等权 RRF，rank_constant=60 | ADR-008，已实施 |
+| 检索接入 | search_policy_evidence 工具，四状态一致性 | ADR-009，已实施 |
+| 索引安全 | allow_pickle=False，模型指纹绑定 | ADR-009，已实施 |
 | 前端 | React 19 + Vite | 已定 |
-| 测试基线 | 1122 passed | 每次交付必须复测 |
+| 测试基线 | 1189 passed | 每次交付必须复测 |
 
 详细复审结论见 `docs/review/stage-01-04-review.md`。
 检索实验结论见 `docs/review/stage05.5a-hybrid-retrieval.md`。
