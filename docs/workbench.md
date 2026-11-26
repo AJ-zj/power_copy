@@ -2,7 +2,7 @@
 
 ## 项目现状与接入范围
 
-当前工作区包含早期骨架。完整模块和产物位于 `../../PowerCopy-V2`，通过 `POWERCOPY_PROJECT_ROOT` 定位。该项目的 README 仍描述早期骨架，工作台对照 Python 实现、`scripts/README.md` 的分阶段说明、原有测试与 `storage/` 产物接入。
+工作台与完整 V2 工程合并为同一仓库。`workbench/` 为后端 API，`frontend/` 为前端，共用根目录的 `powercopy/` 数据层。`POWERCOPY_PROJECT_ROOT` 默认指向仓库根目录，无需额外配置。
 
 在库政策取自完整工程的 `storage/policies_versioned.db`。核对时有 2 条政策、2 个已存版本、2 条采集事件，均为 v1。两条政策地区均未标注。注册表包含 3 个数据源，归档含 3 份离线采集报告、15 条待审核候选、4 份官方 HTML 原档和 1 份合成 PDF 验收样本。
 
@@ -62,10 +62,11 @@ flowchart LR
 从当前工作区执行。接口依赖可安装在工作区内，完整工程的虚拟环境继续提供原有 Agent 和数据依赖。
 
 ```powershell
-$project = (Resolve-Path -LiteralPath '..\..\PowerCopy-V2').Path
-$python = Join-Path $project '.venv\Scripts\python.exe'
-& $python -m pip install -r .\workbench\requirements.txt --target .\.workbench-deps
-& .\scripts\start-workbench-api.ps1 -ProjectRoot $project -Python $python
+# 一次安装（在仓库根目录）
+pip install -e ".[dev]" -e ".[api]" -r requirements.txt
+
+# 启动后端
+uvicorn workbench.main:app --reload --port 8000
 ```
 
 另开一个 PowerShell 窗口，进入当前工作区后运行。
@@ -93,8 +94,8 @@ pnpm dev
 本地 Agent 验收由 Mock LLM 驱动，实际执行 `search_policy` 与 `get_policy_detail`。外部模型调用为 0，Mock 的 Token 用量显示为未知。若需比较不同版本，现有真实库只能验证 v1 查阅及同版本比较。跨版本新增和删除已用隔离验收库验证。
 
 ```powershell
-# 从工作区根目录复跑。HTTP 检查要求本地 API 已启动。
-$project = (Resolve-Path -LiteralPath '..\..\PowerCopy-V2').Path
+# 从仓库根目录复跑。HTTP 检查要求本地 API 已启动。
+$project = (Resolve-Path -LiteralPath '.').Path
 $python = Join-Path $project '.venv\Scripts\python.exe'
 & $python -B .\scripts\verify-workbench-runtime.py --project-root $project --core
 & $python -B .\scripts\check_workbench.py --project-root $project
