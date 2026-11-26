@@ -343,5 +343,5 @@ conn.execute('PRAGMA query_only=ON')
 
 ## 相关文档
 
-- [数据中心详解](data-center.md) — 切片的上游
-- [测试与验收](testing.md) — 切片的验证方式
+- [数据中心详解](Data-Center) — 切片的上游
+- [测试与验收](Testing) — 切片的验证方式

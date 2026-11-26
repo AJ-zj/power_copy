@@ -68,7 +68,7 @@ PowerCopy V2 是面向**售电行业**的政策研究 + 文案生产 Agent 运�
 - robots.txt 自动检查
 - 完整 SSRF 防护
 
-详见 [技术边界](limitations.md)。
+详见 [技术边界](Limitations)。
 
 ## 技术栈
 

@@ -174,6 +174,6 @@ python -m scripts.ingest_versioned --db storage/policies_versioned.db ingest sto
 
 ## 下一步
 
-- [系统架构](architecture.md) — 理解分层设计
-- [数据中心详解](data-center.md) — 深入数据链路
-- [测试与验收](testing.md) — 跑完整验收
+- [系统架构](Architecture) — 理解分层设计
+- [数据中心详解](Data-Center) — 深入数据链路
+- [测试与验收](Testing) — 跑完整验收

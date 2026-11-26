@@ -1,43 +1,83 @@
 name: Sync Wiki
 
-# 把主仓库 wiki/ 目录同步到 GitHub Wiki
+# 两段式同步：先由 docs/ 生成 wiki/，再把 wiki/ 推到 GitHub Wiki
+#
+# 为什么需要生成步骤
+# ------------------
+# docs/ 给仓库内浏览用，链接写 `data-center.md`（相对路径 + 小写）。
+# GitHub Wiki 必须用页面名 `Data-Center`（首字母大写、无后缀）。
+# 直接复制会让 Wiki 上所有内部链接和图片全部失效。
+# `scripts/sync_wiki.py` 负责文件名映射、链接转换、图片路径转换。
 #
 # 触发条件：
-#   - wiki/ 下有文件变更并推送到 main
-#   - 手动触发（可勾选干跑模式）
+#   - docs/** 或 wiki/** 变更推送到 main
+#   - 手动触发（可勾选干跑）
 #
-# 前置要求：仓库需要配置 WIKI_TOKEN secret（Personal Access Token）
+# 前置要求：仓库需配置 WIKI_TOKEN secret（Personal Access Token）
 # 详见 wiki/README.md
 
 on:
   push:
     branches: [main]
     paths:
+      - 'docs/**'
       - 'wiki/**'
+      - 'scripts/sync_wiki.py'
       - '.github/workflows/sync-wiki.yml'
   workflow_dispatch:
     inputs:
       dry_run:
-        description: '干跑：只检查差异，不推送'
+        description: '干跑：只检查差异，不提交也不推送'
         type: boolean
         default: false
 
-# 同一时刻只允许一个同步任务，避免并发推送冲突
 concurrency:
   group: sync-wiki
   cancel-in-progress: true
 
 jobs:
   sync:
-    name: 同步 wiki/ 到 GitHub Wiki
+    name: 同步 docs/ 到 Wiki
     runs-on: ubuntu-latest
 
     permissions:
-      contents: read
+      contents: write        # 需要回写生成后的 wiki/ 到主仓库
 
     steps:
       - name: 检出主仓库
         uses: actions/checkout@v4
+
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 生成 wiki/ 内容
+        id: generate
+        run: |
+          set -e
+          python scripts/sync_wiki.py
+          echo ""
+          if git diff --quiet -- wiki/; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "wiki/ 无变化"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "wiki/ 有变化："
+            git diff --stat -- wiki/
+          fi
+
+      - name: 回写 wiki/ 到主仓库
+        if: steps.generate.outputs.changed == 'true' && inputs.dry_run != true
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add wiki/
+          git commit -m "chore: 从 docs/ 自动生成 wiki
+
+          由 .github/workflows/sync-wiki.yml 生成
+          源提交: ${GITHUB_SHA::7}"
+          git push
 
       - name: 检查 WIKI_TOKEN
         env:
@@ -59,45 +99,40 @@ jobs:
           cd wiki-repo
           echo "当前分支: $(git rev-parse --abbrev-ref HEAD)"
 
-      - name: 同步文件
+      - name: 同步文件到 Wiki 仓库
         run: |
-          # 清空旧内容，保留 .git
+          set -e
           find wiki-repo -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
-
-          # 复制 wiki/ 全部内容
           cp -a wiki/. wiki-repo/
-
-          # README.md 是给主仓库看的发布说明，不发布到 Wiki
           rm -f wiki-repo/README.md
 
-          echo "同步后内容："
+          echo "同步后顶层内容："
           find wiki-repo -mindepth 1 -maxdepth 1 ! -name '.git' -printf '  %P\n' | sort
 
-      - name: 检查差异
+      - name: 检查 Wiki 差异
         id: diff
         working-directory: wiki-repo
         run: |
           git add -A
           if git diff --cached --quiet; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "Wiki 已是最新，无变化"
+            echo "Wiki 已是最新"
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
             echo "检测到变化："
             git diff --cached --stat
           fi
 
-      - name: 提交并推送
+      - name: 提交并推送 Wiki
         if: steps.diff.outputs.changed == 'true' && inputs.dry_run != true
         working-directory: wiki-repo
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          SHORT_SHA="${GITHUB_SHA::7}"
           git commit -m "docs: 从主仓库同步 wiki
 
-          源提交: ${SHORT_SHA}
+          源提交: ${GITHUB_SHA::7}
           触发: ${GITHUB_EVENT_NAME}"
 
           git push
@@ -108,15 +143,23 @@ jobs:
           {
             echo "### Wiki 同步结果"
             echo ""
+            echo "| 阶段 | 结果 |"
+            echo "|---|---|"
+            if [ "${{ steps.generate.outputs.changed }}" = "true" ]; then
+              echo "| docs → wiki/ | 已重新生成 |"
+            else
+              echo "| docs → wiki/ | 无变化 |"
+            fi
             if [ "${{ steps.diff.outputs.changed }}" = "true" ]; then
               if [ "${{ inputs.dry_run }}" = "true" ]; then
-                echo "- 模式：**干跑**（检测到变化，未推送）"
+                echo "| wiki/ → Wiki | **干跑，未推送** |"
               else
-                echo "- 模式：**已推送**"
-                echo "- 源提交：\`${GITHUB_SHA::7}\`"
-                echo "- Wiki：https://github.com/${GITHUB_REPOSITORY}/wiki"
+                echo "| wiki/ → Wiki | 已推送 |"
               fi
             else
-              echo "- **Wiki 已是最新，无需同步**"
+              echo "| wiki/ → Wiki | 已是最新 |"
             fi
+            echo ""
+            echo "- 源提交：\`${GITHUB_SHA::7}\`"
+            echo "- Wiki：https://github.com/${GITHUB_REPOSITORY}/wiki"
           } >> "$GITHUB_STEP_SUMMARY"

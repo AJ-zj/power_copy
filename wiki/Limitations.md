@@ -282,6 +282,6 @@ app.add_middleware(TrustedHostMiddleware,
 
 ## 下一步
 
-- [项目概览](overview.md) — 已实现的能力
-- [数据中心详解](data-center.md) — 深入实现细节
-- [测试与验收](testing.md) — 验证方式
+- [项目概览](Overview) — 已实现的能力
+- [数据中心详解](Data-Center) — 深入实现细节
+- [测试与验收](Testing) — 验证方式

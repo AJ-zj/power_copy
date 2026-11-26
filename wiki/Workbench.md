@@ -113,11 +113,11 @@ node .\scripts\check_workbench_ui.cjs
 
 | 总览与运行时 | 数据中心 |
 | --- | --- |
-| [项目总览](screenshots/overview.png) | [数据源注册](screenshots/source-registry.png) |
-| [Agent Playground](screenshots/agent-playground.png) | [采集流水线](screenshots/ingestion-pipeline.png) |
-| [可观测中心](screenshots/observability.png) | [政策库](screenshots/policy-library.png) |
-| [Tool Registry](screenshots/tool-registry.png) | [版本历史](screenshots/version-history.png) |
-|  | [原始档案](screenshots/raw-archive.png) |
+| [项目总览](images/overview.png) | [数据源注册](images/source-registry.png) |
+| [Agent Playground](images/agent-playground.png) | [采集流水线](images/ingestion-pipeline.png) |
+| [可观测中心](images/observability.png) | [政策库](images/policy-library.png) |
+| [Tool Registry](images/tool-registry.png) | [版本历史](images/version-history.png) |
+|  | [原始档案](images/raw-archive.png) |
 
 ## 尚未接入与技术债务
 

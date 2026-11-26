@@ -362,7 +362,7 @@ python -m scripts.ingest_pdf commit <raw.json> --approve-sha256 <review_sha256>
 
 ## ⑨ Chunking
 
-见 [文档切片](chunking.md)。
+见 [文档切片](Chunking)。
 
 ## 数据完整性检查点
 
@@ -396,6 +396,6 @@ chunk_id
 
 ## 下一步
 
-- [文档切片](chunking.md) — 切片如何保证可追溯
-- [测试与验收](testing.md) — 数据中心的验收方式
-- [技术边界](limitations.md) — 已知限制
+- [文档切片](Chunking) — 切片如何保证可追溯
+- [测试与验收](Testing) — 数据中心的验收方式
+- [技术边界](Limitations) — 已知限制

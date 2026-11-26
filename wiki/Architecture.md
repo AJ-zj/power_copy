@@ -331,6 +331,6 @@ class HttpFetcher:
 
 ## 下一步阅读
 
-- [数据中心详解](data-center.md) — 深入每个数据模块
-- [文档切片](chunking.md) — RAG 切片设计
-- [测试与验收](testing.md) — 795 项测试怎么组织的
+- [数据中心详解](Data-Center) — 深入每个数据模块
+- [文档切片](Chunking) — RAG 切片设计
+- [测试与验收](Testing) — 795 项测试怎么组织的
