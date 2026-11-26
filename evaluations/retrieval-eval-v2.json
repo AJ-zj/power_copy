@@ -1,0 +1,288 @@
+{
+  "schema": "policy-retrieval-eval-v1",
+  "version": 2,
+  "frozen": true,
+  "created_at": "2026-11-26",
+  "revision_note": "v2 修正 v1 的标注缺陷：v1 用宽泛关键词（如「电」「经营主体」）会导致 relevant 集合达到 26/26，Recall@10 数学上限仅 0.385。v2 改用条款级精确锚点，relevant 集合控制在 1-5 条。",
+  "description": "PowerCopy V2 检索评测集（30 条）。相关切片按原文条款锚点标注，不依赖 chunk_id，重新切片后仍可用。",
+  "corpus": {
+    "manifest": "storage/rag/chunks.json",
+    "chunks": 26,
+    "documents": 2,
+    "policies": [
+      {
+        "policy_id": "70c4a432f8ca4201b8514bc5f33a2ab6",
+        "title": "电力市场运行基本规则",
+        "source_key": "ndrc",
+        "chunks": 10
+      },
+      {
+        "policy_id": "00aaf3720779431692a2d422fc7eec49",
+        "title": "电力市场注册基本规则",
+        "source_key": "nea",
+        "chunks": 16
+      }
+    ]
+  },
+  "notice": "本评测集只覆盖库里已有的 2 份国家级政策。涉及安徽、广东等地方政策的问题属于「证据不足」类，预期召回为空。",
+  "cases": [
+    {
+      "id": "kw-01",
+      "type": "exact_keyword",
+      "query": "电力市场运行基本规则",
+      "anchors": ["第11次委务会议"],
+      "evidence": "NDRC 政策开篇：2024年4月18日第11次委务会议审议通过",
+      "expect_empty": false
+    },
+    {
+      "id": "kw-02",
+      "type": "exact_keyword",
+      "query": "电力市场注册基本规则",
+      "anchors": ["国能发监管规〔2024〕76号"],
+      "evidence": "NEA 政策发文字号",
+      "expect_empty": false
+    },
+    {
+      "id": "kw-03",
+      "type": "exact_keyword",
+      "query": "电能计量点",
+      "anchors": ["电能计量点"],
+      "evidence": "NDRC 第二十五条：计量点位于产权分界点",
+      "expect_empty": false
+    },
+    {
+      "id": "kw-04",
+      "type": "exact_keyword",
+      "query": "市场管理委员会",
+      "anchors": ["市场管理委员会"],
+      "evidence": "NDRC 第九条：独立于电力交易机构的自治性议事协调机制",
+      "expect_empty": false
+    },
+    {
+      "id": "kw-05",
+      "type": "exact_keyword",
+      "query": "交易周期分为电力中长期交易和电力现货交易",
+      "anchors": ["交易周期分为"],
+      "evidence": "NDRC 第十一条：交易周期划分",
+      "expect_empty": false
+    },
+    {
+      "id": "kw-06",
+      "type": "exact_keyword",
+      "query": "一地注册、各方共享",
+      "anchors": ["一地注册、各方共享"],
+      "evidence": "NEA 第四条（四）信息共享原则",
+      "expect_empty": false
+    },
+    {
+      "id": "sw-01",
+      "type": "short_word",
+      "query": "电价",
+      "anchors": ["电价"],
+      "evidence": "NEA 第三条：执行工商业电价；NDRC 第八条：输配电价",
+      "expect_empty": false,
+      "note": "2 字符，验证回退扫描。锚点必须与 query 一致才公平"
+    },
+    {
+      "id": "sw-02",
+      "type": "short_word",
+      "query": "注销",
+      "anchors": ["自动注销"],
+      "evidence": "NEA 第三十八条：自动注销流程",
+      "expect_empty": false,
+      "note": "2 字符，验证回退扫描"
+    },
+    {
+      "id": "sw-03",
+      "type": "short_word",
+      "query": "监管",
+      "anchors": ["市场暂停、中止、恢复"],
+      "evidence": "NDRC 第三十五条：监管机构制定干预规则",
+      "expect_empty": false,
+      "note": "2 字符，验证回退扫描"
+    },
+    {
+      "id": "sw-04",
+      "type": "short_word",
+      "query": "计量",
+      "anchors": ["电能计量装置误差"],
+      "evidence": "NDRC 第二十四条：计量误差费用承担",
+      "expect_empty": false,
+      "note": "2 字符，验证回退扫描"
+    },
+    {
+      "id": "sw-05",
+      "type": "short_word",
+      "query": "异议",
+      "anchors": ["异议反馈渠道"],
+      "evidence": "NEA 第四十二条：异议反馈渠道",
+      "expect_empty": false,
+      "note": "2 字符，验证回退扫描"
+    },
+    {
+      "id": "sem-01",
+      "type": "semantic",
+      "query": "企业参与交易不能串通抬价",
+      "anchors": ["哄抬价格"],
+      "evidence": "NDRC 第十六条：禁止串通报价、哄抬价格",
+      "expect_empty": false,
+      "note": "语义改写：抬价→哄抬价格"
+    },
+    {
+      "id": "sem-02",
+      "type": "semantic",
+      "query": "注册要经过哪几个环节",
+      "anchors": ["申请、承诺、审查、公示、生效"],
+      "evidence": "NEA 第十八条：注册流程五环节",
+      "expect_empty": false,
+      "note": "语义改写：环节→流程"
+    },
+    {
+      "id": "sem-03",
+      "type": "semantic",
+      "query": "失信了会有什么后果",
+      "anchors": ["纳入失信管理"],
+      "evidence": "NEA 第四十九条：失信管理措施",
+      "expect_empty": false,
+      "note": "语义改写：后果→失信管理"
+    },
+    {
+      "id": "sem-04",
+      "type": "semantic",
+      "query": "政策有效期多久",
+      "anchors": ["有效期五年"],
+      "evidence": "NEA 第五十一条：有效期五年",
+      "expect_empty": false,
+      "note": "语义改写：多久→五年"
+    },
+    {
+      "id": "sem-05",
+      "type": "semantic",
+      "query": "电网出问题要听谁调度",
+      "anchors": ["服从统一调度"],
+      "evidence": "NDRC 第三十条：服从统一调度",
+      "expect_empty": false,
+      "note": "语义改写：听谁调度→服从统一调度"
+    },
+    {
+      "id": "sem-06",
+      "type": "semantic",
+      "query": "市场要披露哪些运行信息",
+      "anchors": ["信息披露规则并监督实施"],
+      "evidence": "NDRC 第四十条：信息披露规则",
+      "expect_empty": false,
+      "note": "语义改写：披露→信息披露"
+    },
+    {
+      "id": "xr-01",
+      "type": "cross_clause",
+      "query": "注册信息变更包含哪些内容",
+      "anchors": ["信息变更主要包含"],
+      "evidence": "NEA 第二十七条：信息变更内容清单",
+      "expect_empty": false,
+      "note": "跨切片：变更内容分布在两个相邻切片"
+    },
+    {
+      "id": "xr-02",
+      "type": "cross_clause",
+      "query": "注销后还能不能重新入市",
+      "anchors": ["重新办理市场注册"],
+      "evidence": "NEA 第四十一条：注销后重新办理注册",
+      "expect_empty": false,
+      "note": "需跨注销与重新注册两处"
+    },
+    {
+      "id": "xr-03",
+      "type": "cross_clause",
+      "query": "电力市场技术支持系统要具备什么功能",
+      "anchors": ["技术支持系统"],
+      "evidence": "NDRC 第三十二条至第三十三条",
+      "expect_empty": false,
+      "note": "功能清单与运维责任跨两个切片"
+    },
+    {
+      "id": "xr-04",
+      "type": "cross_clause",
+      "query": "什么样的经营主体算新型经营主体",
+      "anchors": ["虚拟电厂"],
+      "evidence": "NDRC 第四条：新型经营主体含储能企业、虚拟电厂、负荷聚合商",
+      "expect_empty": false,
+      "note": "定义在两份政策中各有表述"
+    },
+    {
+      "id": "xr-05",
+      "type": "cross_clause",
+      "query": "市场什么时候会被暂停或者中止",
+      "anchors": ["市场暂停、中止、恢复"],
+      "evidence": "NDRC 第三十五条：干预规则",
+      "expect_empty": false,
+      "note": "暂停/中止/恢复三个动作关联"
+    },
+    {
+      "id": "rel-01",
+      "type": "policy_relation",
+      "query": "国家发改委通过了哪部电力市场规章",
+      "anchors": ["第11次委务会议"],
+      "evidence": "NDRC 政策发文信息",
+      "expect_empty": false
+    },
+    {
+      "id": "rel-02",
+      "type": "policy_relation",
+      "query": "国家能源局发布的注册类规范性文件",
+      "anchors": ["国能发监管规〔2024〕76号"],
+      "evidence": "NEA 政策发文字号",
+      "expect_empty": false
+    },
+    {
+      "id": "rel-03",
+      "type": "policy_relation",
+      "query": "全国统一电力市场1+N基础规则体系",
+      "anchors": ["1+N"],
+      "evidence": "NEA 第一条：1+N 基础规则体系",
+      "expect_empty": false,
+      "note": "库里暂无政策关系数据，此条测的是文本匹配"
+    },
+    {
+      "id": "rel-04",
+      "type": "policy_relation",
+      "query": "国务院深化电力体制改革的若干意见",
+      "anchors": ["中共中央 国务院关于进一步深化电力体制改革的若干意见"],
+      "evidence": "NDRC 第一条引用上位文件",
+      "expect_empty": false,
+      "note": "测引用关系的文本锚点"
+    },
+    {
+      "id": "empty-01",
+      "type": "insufficient_evidence",
+      "query": "安徽电力现货市场交易规则",
+      "anchors": [],
+      "evidence": "库中无安徽地方政策",
+      "expect_empty": true
+    },
+    {
+      "id": "empty-02",
+      "type": "insufficient_evidence",
+      "query": "广东省售电公司管理办法",
+      "anchors": [],
+      "evidence": "库中无广东政策",
+      "expect_empty": true
+    },
+    {
+      "id": "empty-03",
+      "type": "insufficient_evidence",
+      "query": "碳排放配额交易规则",
+      "anchors": [],
+      "evidence": "库中无碳市场政策",
+      "expect_empty": true
+    },
+    {
+      "id": "empty-04",
+      "type": "insufficient_evidence",
+      "query": "2026年居民阶梯电价补贴标准",
+      "anchors": [],
+      "evidence": "库中无补贴政策",
+      "expect_empty": true
+    }
+  ]
+}
