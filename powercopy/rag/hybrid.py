@@ -127,6 +127,15 @@ class HybridOutcome:
     notice: str = ""
     index_fingerprints: dict[str, str] = field(default_factory=dict)
 
+    consistency_status: str = "ok"
+    """索引一致性判定结果。
+
+    - ok                        两路同源，完整融合
+    - single_path_unconfigured  只配置了一路，降级为单路检索
+    - fingerprint_missing       指纹缺失，无法确认同源
+    - version_conflict          版本冲突（此时 search() 会抛 HybridError）
+    """
+
     @property
     def match_mode(self) -> str:
         """与 LexicalSearch / DenseSearch 对齐的模式名，供评测代码复用。"""
@@ -148,6 +157,7 @@ class HybridOutcome:
             "returned": self.returned,
             "degraded": self.degraded,
             "degraded_detail": self.degraded_detail,
+            "consistency_status": self.consistency_status,
             "rank_constant": self.rank_constant,
             "lexical_candidate_k": self.lexical_candidate_k,
             "dense_candidate_k": self.dense_candidate_k,
@@ -300,52 +310,98 @@ class HybridRetriever:
     # ---- 一致性检查 ----
 
     def check_index_consistency(self) -> dict:
-        """校验两路索引来自同一份切片清单。
+        """校验两路索引的可用性、指纹完整性与版本一致性。
+
+        判定规则（严格）：
+
+        1. **单路未配置** —— 该路为 None，不是错误，但融合不完整，
+           记为 `single_path_unconfigured`。
+        2. **指纹缺失** —— 两路都存在时，任何一方的 manifest_sha256
+           为空，一律**判定不一致**。不能因为「拿不到指纹」就当作一致。
+        3. **版本冲突** —— 两路 manifest_sha256 不同，**判定不一致**。
+           即使 allow_degrade=True 也**禁止融合**，因为跨版本的 chunk_id
+           可能指向不同内容，融合结果无法追溯。
+        4. 只有两路都存在、指纹都非空且相等，才判定一致。
 
         Returns:
-            {"consistent": bool, "detail": str}
+            {
+              "consistent": bool,
+              "status": str,          # ok / single_path_unconfigured /
+                                      # fingerprint_missing / version_conflict
+              "detail": str,
+              "fingerprints": dict,
+              "degraded_path": str|None,   # 可信单路（仅单路未配置时）
+            }
 
         Raises:
-            HybridError: 索引版本不一致且不可降级时。
+            HybridError: 版本冲突或指纹缺失，且不允许降级。
+                版本冲突时**即使允许降级也抛错**。
         """
 
-        fingerprints = {}
+        fingerprints: dict[str, str] = {}
+        configured: list[str] = []
 
         if self.lexical is not None:
+            configured.append("lexical")
             meta = self.lexical.describe()
-            fingerprints["lexical"] = meta.get("manifest_sha256") or ""
+            fingerprints["lexical"] = str(
+                meta.get("manifest_sha256") or ""
+            )
 
         if self.dense is not None:
+            configured.append("dense")
             meta = self.dense.meta
-            fingerprints["dense"] = meta.get("manifest_sha256") or ""
+            fingerprints["dense"] = str(meta.get("manifest_sha256") or "")
 
-        values = [v for v in fingerprints.values() if v]
-
-        if len(values) < 2:
+        # ---- 情况 1：只配置了一路 ----
+        if len(configured) < 2:
+            available = configured[0] if configured else None
             return {
-                "consistent": True,
-                "detail": "仅一路可用，无需一致性检查",
+                "consistent": False,
+                "status": "single_path_unconfigured",
+                "detail": (
+                    f"仅配置了 {available} 一路检索器，"
+                    f"未配置的一路不参与融合"
+                ),
                 "fingerprints": fingerprints,
+                "degraded_path": available,
             }
 
-        if len(set(values)) == 1:
+        # ---- 情况 2：两路都在，但指纹缺失 ----
+        missing = [k for k, v in fingerprints.items() if not v]
+        if missing:
+            detail = (
+                f"索引指纹缺失：{'、'.join(missing)} 未报告 manifest_sha256，"
+                f"无法确认两路索引是否同源"
+            )
+            if not self.allow_degrade:
+                raise HybridError(f"{detail}（拒绝融合）")
             return {
-                "consistent": True,
-                "detail": "两路索引来自同一份切片清单",
+                "consistent": False,
+                "status": "fingerprint_missing",
+                "detail": detail,
                 "fingerprints": fingerprints,
+                "degraded_path": None,
             }
 
-        detail = "两路索引的 manifest_sha256 不一致：" + "，".join(
-            f"{k}={v[:12]}..." for k, v in fingerprints.items()
-        )
+        # ---- 情况 3：版本冲突 ----
+        if len(set(fingerprints.values())) != 1:
+            detail = "两路索引的 manifest_sha256 不一致：" + "，".join(
+                f"{k}={v[:12]}..." for k, v in fingerprints.items()
+            )
+            # 版本冲突时即使 allow_degrade 也禁止融合：
+            # 跨版本的 chunk_id 无法保证指向同一份内容
+            raise HybridError(
+                f"{detail}（版本冲突，禁止融合，即使开启降级也不例外）"
+            )
 
-        if not self.allow_degrade:
-            raise HybridError(f"{detail}（拒绝融合）")
-
+        # ---- 情况 4：一致 ----
         return {
-            "consistent": False,
-            "detail": detail,
+            "consistent": True,
+            "status": "ok",
+            "detail": "两路索引来自同一份切片清单",
             "fingerprints": fingerprints,
+            "degraded_path": None,
         }
 
     # ---- 检索 ----
@@ -392,6 +448,31 @@ class HybridRetriever:
 
         # 一致性检查：不一致直接拒绝，不静默融合
         consistency = self.check_index_consistency()
+
+        consistency_status = consistency.get("status", "ok")
+
+        # 单路未配置：只跑配置了的那一路，并显式标注降级
+        if consistency_status == "single_path_unconfigured":
+            return self._search_single_path(
+                query,
+                consistency=consistency,
+                lexical_candidate_k=lexical_candidate_k,
+                dense_candidate_k=dense_candidate_k,
+                final_top_k=final_top_k,
+            )
+
+        # 指纹缺失：已由 check_index_consistency 决定抛错或返回，
+        # 返回时不允许融合（chunk_id 无法保证同源）
+        if consistency_status == "fingerprint_missing":
+            return self._empty_outcome(
+                query,
+                consistency=consistency,
+                degraded="fingerprint_missing",
+                degraded_detail=consistency["detail"],
+                lexical_candidate_k=lexical_candidate_k,
+                dense_candidate_k=dense_candidate_k,
+                final_top_k=final_top_k,
+            )
 
         # 两路检索
         #
@@ -462,11 +543,151 @@ class HybridRetriever:
             dense_returned=len(dense_hits),
             degraded=degraded,
             degraded_detail=degraded_detail,
+            consistency_status=consistency_status,
             notice=notice,
             index_fingerprints=consistency.get("fingerprints", {}),
         )
 
     # ---- 内部 ----
+
+    def _search_single_path(
+        self,
+        query: str,
+        *,
+        consistency: dict,
+        lexical_candidate_k: int,
+        dense_candidate_k: int,
+        final_top_k: int,
+    ) -> "HybridOutcome":
+        """单路未配置时的检索。
+
+        只跑配置了的一路，并**显式**标注为降级（不是完整混合检索）。
+        """
+
+        available = consistency.get("degraded_path")
+        hits = []
+        mode = None
+        failed = None
+        detail = consistency["detail"]
+
+        if available == "lexical" and self.lexical is not None:
+            try:
+                out = self.lexical.search(query, top_k=lexical_candidate_k)
+                hits = list(out.hits[:final_top_k])
+                mode = out.match_mode
+            except Exception as exc:  # noqa: BLE001
+                failed = f"{type(exc).__name__}: {exc}"
+        elif available == "dense" and self.dense is not None:
+            try:
+                out = self.dense.search(query, top_k=dense_candidate_k)
+                hits = list(out.hits[:final_top_k])
+                mode = out.match_mode
+            except Exception as exc:  # noqa: BLE001
+                failed = f"{type(exc).__name__}: {exc}"
+
+        if failed is not None:
+            if not self.allow_degrade:
+                raise RetrieverFailure(f"单路检索失败：{failed}")
+            return self._empty_outcome(
+                query,
+                consistency=consistency,
+                degraded="single_path_failed",
+                degraded_detail=f"{detail}；且该路检索异常：{failed}",
+                lexical_candidate_k=lexical_candidate_k,
+                dense_candidate_k=dense_candidate_k,
+                final_top_k=final_top_k,
+            )
+
+        # 转成 HybridHit，贡献只有单路
+        fused: list[HybridHit] = []
+        for index, hit in enumerate(hits[:final_top_k], start=1):
+            contribution = PathContribution(
+                path=available,
+                rank=hit.rank,
+                score=hit.score,
+                match_mode=hit.match_mode,
+                rrf=rrf_contribution(
+                    hit.rank, self.rank_constant, self.weights[available]
+                ),
+            )
+            fused.append(
+                HybridHit(
+                    chunk_id=hit.chunk_id,
+                    rrf_score=contribution.rrf,
+                    rank=index,
+                    policy_id=hit.policy_id,
+                    document_id=hit.document_id,
+                    version=hit.version,
+                    page=hit.page,
+                    start=hit.start,
+                    end=hit.end,
+                    title=hit.title,
+                    source_key=hit.source_key,
+                    source_url=hit.source_url,
+                    content_sha256=hit.content_sha256,
+                    text=hit.text,
+                    contributions=[contribution],
+                )
+            )
+
+        notice = (
+            f"⚠ 降级模式（single_path_unconfigured）："
+            f"本次只使用 {available} 一路检索，不是完整混合检索。"
+            f"{detail}。"
+            f"RRF 只融合排名，不判断证据充分性；未命中不等于政策不存在"
+        )
+
+        return HybridOutcome(
+            query=query,
+            hits=fused,
+            rank_constant=self.rank_constant,
+            lexical_candidate_k=lexical_candidate_k,
+            dense_candidate_k=dense_candidate_k,
+            final_top_k=final_top_k,
+            weights=dict(self.weights),
+            lexical_mode=mode if available == "lexical" else None,
+            dense_mode=mode if available == "dense" else None,
+            lexical_returned=len(hits) if available == "lexical" else 0,
+            dense_returned=len(hits) if available == "dense" else 0,
+            degraded="single_path_unconfigured",
+            degraded_detail=detail,
+            consistency_status="single_path_unconfigured",
+            notice=notice,
+            index_fingerprints=consistency.get("fingerprints", {}),
+        )
+
+    def _empty_outcome(
+        self,
+        query: str,
+        *,
+        consistency: dict,
+        degraded: str,
+        degraded_detail: str,
+        lexical_candidate_k: int,
+        dense_candidate_k: int,
+        final_top_k: int,
+    ) -> "HybridOutcome":
+        """无法可信融合时返回空结果 + 明确状态。"""
+
+        notice = (
+            f"⚠ 无法执行可信检索（{degraded}）：{degraded_detail}。"
+            f"不返回任何候选，避免把不可信结果当作政策依据。"
+        )
+
+        return HybridOutcome(
+            query=query,
+            hits=[],
+            rank_constant=self.rank_constant,
+            lexical_candidate_k=lexical_candidate_k,
+            dense_candidate_k=dense_candidate_k,
+            final_top_k=final_top_k,
+            weights=dict(self.weights),
+            degraded=degraded,
+            degraded_detail=degraded_detail,
+            consistency_status=consistency.get("status", degraded),
+            notice=notice,
+            index_fingerprints=consistency.get("fingerprints", {}),
+        )
 
     @staticmethod
     def _classify_degradation(

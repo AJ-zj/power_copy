@@ -27,6 +27,7 @@ storage/raw_pdf/
 storage/ingestion_runs/
 storage/rag/
 storage/models/
+storage/research/
 workspace/
 *.sqlite3
 *.sqlite3-journal

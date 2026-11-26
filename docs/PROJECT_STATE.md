@@ -1,8 +1,8 @@
 # PROJECT_STATE
 
-**最后更新**：2026-11-26（05.5-A 混合检索完成后）
-**当前阶段**：阶段04 完成，阶段05 进行中（05.1 切片 + Embedding + 05-A 词法 + 05-B 向量 + 05.5-A 混合检索）
-**代码基线**：1122 项测试通过
+**最后更新**：2026-11-26（V2.1 MVP-01 检索集成完成后）
+**当前阶段**：阶段05 检索链路完成并已接入 Agent（V2.1 MVP-01）；下一步 MVP-02 政策研究与证据包
+**代码基线**：1189 项测试通过
 
 ---
 
@@ -25,9 +25,10 @@
 | 05.1-B | 本地 Embedding 能力 | ✅ 已验收 | 28 |
 | 05-A | BM25 词法检索基线 | ✅ 已验收 | 81 |
 | 05-B | Dense 向量检索 | ✅ 已验收 | 46 |
-| 05.5-A | Hybrid 混合检索（RRF） | ✅ **本次完成** | 63 |
+| 05.5-A | Hybrid 混合检索（RRF） | ✅ 已验收 | 68 |
+| MVP-01 | 检索集成（接入 Agent） | ✅ **本次完成** | 55 |
 
-**测试总数**：1122 passed
+**测试总数**：1189 passed
 
 ---
 
@@ -112,6 +113,59 @@ frontend/src/pages/Runtime.tsx           状态展示与配色
 tests/test_tool_result_semantics.py      新增 41 项
 scripts/check_tool_result_semantics.py   新增 11 项验收
 ```
+
+---
+
+## 二-B、MVP-01 交付摘要（检索集成）
+
+### 解决的问题
+
+05.5-A 交付了混合检索，但存在三个阻碍接入 Agent 的问题，已全部修复：
+
+| 问题 | 修复 |
+|---|---|
+| 指纹缺失被判为「一致」 | 四状态判定，缺指纹不再视为一致 |
+| 版本冲突可用 allow_degrade 绕过 | 版本冲突硬拒绝，**即使 allow_degrade=True** |
+| NPZ 需 allow_pickle=True | chunk_ids 改定长 Unicode，`allow_pickle=False` |
+
+### 关键改动
+
+- `CacheNamespace` 绑定 model / commit / tokenizer_fingerprint / dim / pooling /
+  normalized / encode_mode 七项；缺 commit 或 tokenizer 指纹则拒绝加载缓存
+- 索引记录 model_commit + tokenizer_fingerprint，**加载与每次 search() 都校验**
+- 模型加载默认 `local_files_only=True`，缺模型报错不联网
+- 索引/数据库路径只来自程序配置，工具参数 `extra="forbid"`
+
+### 新增工具
+
+```text
+search_policy_evidence
+  query（1-200 字符）+ top_k（1-20）
+  输出含 policy_id / document_id / version / 字符偏移 / content_sha256 / source_url
+  candidates_are_not_facts: true  ← 明确「候选 ≠ 事实」
+  索引与政策库版本比对，不新鲜时标注 INDEX_MAY_BE_STALE
+```
+
+### 运行时
+
+`RunRequest.use_retrieval`（默认 **False**，保持原有 search_policy 流程不变）。
+Mock LLM 端到端验证通过：任务 → Agent Loop → 检索工具 → ToolResult → 输出。
+
+### 重要：需重建索引
+
+```text
+旧索引 policy-dense-index-v1    → 必须重建（object 数组不再支持）
+旧缓存 policy-embedding-cache-v1 → 已失效（命名空间字段变化）
+
+python scripts/build_dense_index.py --rebuild
+python scripts/eval_retrieval.py --rebuild
+```
+
+### 未解决
+
+- **证据充分性判断仍缺失**（候选 ≠ 有证据），分配至 MVP-02
+- RRF 不保证每个查询都优于单路（分类型指标持平）
+- 前端类型检查未执行（本机无 Node）
 
 ---
 
@@ -287,7 +341,7 @@ nDCG@10    : 0.4231
 
 | 项 | 状态 | 方式 |
 |---|---|---|
-| 全量回归 | ✅ 1122 passed | `python -m pytest tests -q` |
+| 全量回归 | ✅ 1189 passed | `python -m pytest tests -q` |
 | 04.9 验收 | ✅ 11/11 | `python scripts/check_tool_result_semantics.py` |
 | 05.1 验收 | ✅ 10/10 | `python scripts/check_chunking.py` |
 | 源码未越界改动 | ✅ | 19 个核心模块哈希记录 |
