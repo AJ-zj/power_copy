@@ -502,16 +502,21 @@ class TestIndexConsistency:
 
         info = hybrid.check_index_consistency()
         assert info["consistent"] is True
+        assert info["status"] == "ok"
 
     def test_mismatch_rejected_by_default(self):
         lex = FakeRetriever(manifest_sha="hash-a")
         dns = FakeRetriever(manifest_sha="hash-b")
         hybrid = HybridRetriever(lex, dns)
 
-        with pytest.raises(HybridError, match="拒绝融合"):
+        with pytest.raises(HybridError, match="版本冲突"):
             hybrid.search("q")
 
-    def test_mismatch_allowed_with_degrade(self):
+    def test_mismatch_rejected_even_with_degrade(self):
+        """版本冲突时即使开启降级也必须拒绝融合。
+
+        跨版本的 chunk_id 无法保证指向同一份内容，融合结果不可追溯。
+        """
         lex = FakeRetriever(
             [FakeHit("c1", 1, 0.9)], manifest_sha="hash-a"
         )
@@ -520,10 +525,61 @@ class TestIndexConsistency:
         )
         hybrid = HybridRetriever(lex, dns, allow_degrade=True)
 
-        # 不抛错，但应记录不一致
+        with pytest.raises(HybridError, match="版本冲突"):
+            hybrid.search("q")
+
+        with pytest.raises(HybridError, match="版本冲突"):
+            hybrid.check_index_consistency()
+
+    def test_fingerprint_missing_not_consistent(self):
+        """两路都在但任一指纹缺失，不得判定一致。"""
+        lex = FakeRetriever(manifest_sha="")
+        dns = FakeRetriever(manifest_sha="hash-b")
+        hybrid = HybridRetriever(lex, dns, allow_degrade=True)
+
         info = hybrid.check_index_consistency()
         assert info["consistent"] is False
-        assert "不一致" in info["detail"]
+        assert info["status"] == "fingerprint_missing"
+
+    def test_fingerprint_missing_rejected_without_degrade(self):
+        lex = FakeRetriever(manifest_sha="")
+        dns = FakeRetriever(manifest_sha="hash-b")
+        hybrid = HybridRetriever(lex, dns, allow_degrade=False)
+
+        with pytest.raises(HybridError, match="指纹缺失"):
+            hybrid.check_index_consistency()
+
+    def test_fingerprint_missing_returns_empty(self):
+        """指纹缺失 + 允许降级：返回空结果并显式标注。"""
+        lex = FakeRetriever([FakeHit("c1", 1, 0.9)], manifest_sha="")
+        dns = FakeRetriever([FakeHit("c2", 1, 0.9)], manifest_sha="hash-b")
+        hybrid = HybridRetriever(lex, dns, allow_degrade=True)
+
+        out = hybrid.search("q", final_top_k=5)
+        assert out.is_complete is False
+        assert out.degraded == "fingerprint_missing"
+        assert out.returned == 0
+        assert out.consistency_status == "fingerprint_missing"
+
+    def test_single_path_unconfigured_not_consistent(self):
+        """只配置一路时，不得判定为「一致」，应显式标注降级。"""
+        lex = FakeRetriever([FakeHit("c1", 1, 0.9)], manifest_sha="hash-a")
+        hybrid = HybridRetriever(lex, None)
+
+        info = hybrid.check_index_consistency()
+        assert info["consistent"] is False
+        assert info["status"] == "single_path_unconfigured"
+        assert info["degraded_path"] == "lexical"
+
+    def test_single_path_search_is_degraded(self):
+        lex = FakeRetriever([FakeHit("c1", 1, 0.9)], manifest_sha="hash-a")
+        hybrid = HybridRetriever(lex, None)
+
+        out = hybrid.search("q", final_top_k=5)
+        assert out.returned == 1
+        assert out.is_complete is False
+        assert out.degraded == "single_path_unconfigured"
+        assert "不是完整混合检索" in out.notice
 
 
 # ==========================================================================

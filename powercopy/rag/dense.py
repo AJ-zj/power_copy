@@ -51,8 +51,18 @@ from powercopy.rag.embedding import (
     EmbeddingError,
 )
 
-SCHEMA_VERSION = "policy-dense-index-v1"
-CACHE_SCHEMA = "policy-embedding-cache-v1"
+SCHEMA_VERSION = "policy-dense-index-v2"
+"""索引格式版本。
+
+v1: chunk_ids 用 dtype=object 存储，加载需 allow_pickle=True（有反序列化风险）
+v2: chunk_ids 为定长 Unicode 数组，allow_pickle=False 即可加载；
+    并新增 model_commit / tokenizer_fingerprint 等模型身份字段
+
+旧 v1 索引**不会**被自动加载，必须用 scripts/build_dense_index.py --rebuild 重建。
+"""
+
+CACHE_SCHEMA = "policy-embedding-cache-v2"
+"""缓存格式版本。v2 起命名空间绑定真实模型 commit 与 tokenizer 指纹。"""
 
 
 class DenseSearchError(Exception):
@@ -159,48 +169,114 @@ def _validate_matrix(matrix: np.ndarray, expected_dim: int) -> None:
         )
 
 
-# ---------------------------------------------------------------- 缓存
-def cache_namespace() -> dict:
-    """缓存隔离命名空间。
+@dataclass
+class CacheNamespace:
+    """缓存命名空间：向量可复用的前提条件。
 
-    向量只在以下全部一致时可复用：
-    - 模型名与 commit
-    - 向量维度
-    - 池化方式
-    - 归一化方式
-    - 编码模式（query 加指令 vs document 不加）
-    - tokenizer 版本
-
-    任何一项变化都会使缓存失效，避免「换了模型却复用旧向量」。
+    只承载「会改变向量数值」的因素。任何一项不同，
+    旧向量都不能与新向量混合使用。
     """
 
-    import transformers
+    model: str
+    commit: str
+    tokenizer_fingerprint: str
+    dim: int
+    pooling: str
+    normalized: bool
+    encode_mode: str
+    max_tokens: int
 
-    return {
-        "model": MODEL_NAME,
-        "dim": EMBEDDING_DIM,
-        "pooling": "cls_l2",
-        "normalized": True,
-        "encode_mode": "document",  # 索引侧只编码文档
-        "tokenizer": getattr(transformers, "__version__", "unknown"),
-        "max_tokens": MAX_TOKENS,
-    }
+    def as_dict(self) -> dict:
+        return {
+            "model": self.model,
+            "commit": self.commit,
+            "tokenizer_fingerprint": self.tokenizer_fingerprint,
+            "dim": self.dim,
+            "pooling": self.pooling,
+            "normalized": self.normalized,
+            "encode_mode": self.encode_mode,
+            "max_tokens": self.max_tokens,
+        }
+
+    def missing_fields(self) -> list[str]:
+        """返回缺失（空）的必需字段。
+
+        commit 与 tokenizer_fingerprint 是判断模型一致性的关键，
+        缺失时不能当作「一致」。
+        """
+
+        empty = []
+        for key in ("model", "commit", "tokenizer_fingerprint"):
+            if not getattr(self, key):
+                empty.append(key)
+        return empty
 
 
-def _namespace_fingerprint(namespace: dict) -> str:
-    return _fingerprint(namespace)
+def cache_namespace(embedder: "BGEEmbedder | None" = None) -> CacheNamespace:
+    """构造缓存命名空间，绑定**实际**模型指纹。
+
+    Args:
+        embedder: 编码器实例。传入时会读取其真实 commit 与 tokenizer 指纹；
+            None 时只能读到模型名与维度，commit/tokenizer 为空，
+            此时该命名空间不应被视为可用于验证兼容性。
+
+    注意：旧实现只记录 transformers 库版本号作为 "tokenizer"，
+    这不足以判断 tokenizer 是否真的相同（库版本相同但词表可能不同）。
+    现在改为记录**实际 tokenizer 的指纹**。
+    """
+
+    if embedder is not None:
+        fp = embedder.model_fingerprint
+        return CacheNamespace(
+            model=str(fp.get("model") or ""),
+            commit=str(fp.get("commit") or ""),
+            tokenizer_fingerprint=str(fp.get("tokenizer_fingerprint") or ""),
+            dim=int(fp.get("dim") or 0),
+            pooling=str(fp.get("pooling") or ""),
+            normalized=bool(fp.get("normalized")),
+            encode_mode="document",
+            max_tokens=int(fp.get("max_tokens") or 0),
+        )
+
+    return CacheNamespace(
+        model=MODEL_NAME,
+        commit="",
+        tokenizer_fingerprint="",
+        dim=EMBEDDING_DIM,
+        pooling="cls_l2",
+        normalized=True,
+        encode_mode="document",
+        max_tokens=MAX_TOKENS,
+    )
+
+
+def _namespace_fingerprint(namespace: CacheNamespace) -> str:
+    return _fingerprint(namespace.as_dict())
 
 
 class EmbeddingCache:
     """按 text_sha256 缓存向量，避免重复编码。
 
-    缓存按 `cache_namespace()` 隔离：模型/维度/池化/归一化/编码模式
-    任一项不符则整个缓存失效（返回空），不静默复用。
+    缓存按 `CacheNamespace` 隔离：模型 / commit / tokenizer 指纹 /
+    维度 / 池化 / 归一化 / 编码模式任一项不符则整个缓存失效（返回空），
+    不静默复用旧向量。
+
+    若传入的命名空间本身缺少 commit 或 tokenizer 指纹（即无法确认
+    模型身份），缓存**拒绝加载**，避免在身份不明时复用旧向量。
     """
 
-    def __init__(self, path: str | Path, *, namespace: dict | None = None):
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        namespace: CacheNamespace | dict | None = None,
+    ):
         self.path = Path(path)
-        self._namespace = namespace or cache_namespace()
+        if namespace is None:
+            namespace = cache_namespace()
+        elif isinstance(namespace, dict):
+            namespace = CacheNamespace(**namespace)
+        self._namespace = namespace
         self._data: dict[str, list[float]] = {}
         self._dirty = False
         self._rejected_reason: str | None = None
@@ -208,7 +284,7 @@ class EmbeddingCache:
 
     @property
     def namespace(self) -> dict:
-        return dict(self._namespace)
+        return self._namespace.as_dict()
 
     @property
     def rejected_reason(self) -> str | None:
@@ -217,6 +293,12 @@ class EmbeddingCache:
         return self._rejected_reason
 
     def _load(self) -> None:
+        # 命名空间本身无法确认模型身份 → 不复用任何旧向量
+        missing = self._namespace.missing_fields()
+        if missing:
+            self._rejected_reason = "namespace_incomplete:" + ",".join(missing)
+            return
+
         if not self.path.is_file():
             return
 
@@ -231,11 +313,12 @@ class EmbeddingCache:
             return
 
         stored = payload.get("namespace") or {}
+        expected = self._namespace.as_dict()
 
         # 逐项比对命名空间，任何差异都拒绝
-        for key, expected in self._namespace.items():
+        for key, want in expected.items():
             actual = stored.get(key)
-            if actual != expected:
+            if actual != want:
                 self._rejected_reason = f"{key}_mismatch"
                 return
 
@@ -254,7 +337,7 @@ class EmbeddingCache:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "schema": CACHE_SCHEMA,
-            "namespace": self._namespace,
+            "namespace": self._namespace.as_dict(),
             "namespace_fingerprint": _namespace_fingerprint(self._namespace),
             "count": len(self._data),
             "vectors": self._data,
@@ -294,7 +377,6 @@ def build_dense_index(
     Returns:
         构建统计
     """
-
     manifest_path = Path(manifest_path)
     index_path = Path(index_path)
 
@@ -318,7 +400,35 @@ def build_dense_index(
 
     embedder = embedder or BGEEmbedder()
 
-    cache = EmbeddingCache(cache_path) if cache_path else None
+    # 先触发模型加载，才能拿到真实 commit 与 tokenizer 指纹
+    embedder._ensure_loaded()  # noqa: SLF001 - 同一包内的受控访问
+    model_info = embedder.model_fingerprint
+
+    missing = [
+        key
+        for key in ("model", "commit", "tokenizer_fingerprint")
+        if not model_info.get(key)
+    ]
+    if missing:
+        raise DenseSearchError(
+            f"无法确认模型身份，拒绝构建索引：缺少 {missing}。"
+            f"请检查模型缓存是否完整（storage/models）。"
+        )
+
+    namespace = CacheNamespace(
+        model=str(model_info["model"]),
+        commit=str(model_info["commit"]),
+        tokenizer_fingerprint=str(model_info["tokenizer_fingerprint"]),
+        dim=int(model_info["dim"]),
+        pooling=str(model_info["pooling"]),
+        normalized=bool(model_info["normalized"]),
+        encode_mode="document",
+        max_tokens=int(model_info["max_tokens"]),
+    )
+
+    cache = (
+        EmbeddingCache(cache_path, namespace=namespace) if cache_path else None
+    )
 
     texts = [c["text"] for c in chunks]
     vectors: list[list[float] | None] = [None] * len(texts)
@@ -349,14 +459,15 @@ def build_dense_index(
     matrix = np.asarray(vectors, dtype=np.float32)
     _validate_matrix(matrix, EMBEDDING_DIM)
 
-    model_info = getattr(embedder, "model_fingerprint", None)
-    if model_info is None:
-        model_info = {
-            "model": MODEL_NAME,
-            "dim": EMBEDDING_DIM,
-            "max_tokens": MAX_TOKENS,
-            "pooling": "cls_l2",
-        }
+    # chunk_id 唯一性：重复 ID 会让融合去重与追溯失效
+    chunk_ids = [c["chunk_id"] for c in chunks]
+    if len(set(chunk_ids)) != len(chunk_ids):
+        duplicates = sorted(
+            {cid for cid in chunk_ids if chunk_ids.count(cid) > 1}
+        )
+        raise DenseSearchError(
+            f"清单中存在重复 chunk_id：{duplicates[:5]}"
+        )
 
     meta = {
         "schema": SCHEMA_VERSION,
@@ -366,10 +477,19 @@ def build_dense_index(
         "document_count": len(manifest.get("documents") or []),
         "model": meta_model_name(model_info),
         "model_commit": meta_model_commit(model_info),
+        "tokenizer_fingerprint": str(
+            model_info.get("tokenizer_fingerprint") or ""
+        ),
         "dim": EMBEDDING_DIM,
         "max_tokens": MAX_TOKENS,
-        "pooling": "cls_l2",
-        "normalized": True,
+        "pooling": str(model_info.get("pooling") or "cls_l2"),
+        "normalized": bool(model_info.get("normalized")),
+        "encode_mode_document": str(
+            model_info.get("encode_mode_document") or "document_no_instruction"
+        ),
+        "query_instruction": str(
+            model_info.get("query_instruction") or ""
+        ),
         "dtype": "float32",
         "cache_cached": cached,
         "cache_encoded": encoded,
@@ -377,10 +497,13 @@ def build_dense_index(
     meta["fingerprint"] = _fingerprint(meta)
 
     index_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # chunk_ids 存为定长 Unicode 数组（dtype='<U...'），不依赖 pickle。
+    # 旧实现用 dtype=object，np.load 必须 allow_pickle=True，存在反序列化风险。
     np.savez_compressed(
         index_path,
         vectors=matrix,
-        chunk_ids=np.asarray([c["chunk_id"] for c in chunks], dtype=object),
+        chunk_ids=np.asarray(chunk_ids, dtype=str),
         meta_json=np.asarray(json.dumps(meta, ensure_ascii=False)),
     )
 
@@ -416,7 +539,21 @@ class DenseSearch:
         *,
         manifest_path: str | Path,
         embedder: BGEEmbedder | None = None,
+        verify_model: bool = True,
     ):
+        """加载向量索引。
+
+        Args:
+            index_path: `.npz` 索引路径
+            manifest_path: 切片清单路径
+            embedder: 查询编码器。传入时会在加载后立即校验模型一致性
+            verify_model: 是否校验索引记录的模型与编码器一致
+
+        Raises:
+            DenseSearchError: 索引格式不被支持、与清单不匹配、
+                或模型身份无法确认/不一致
+        """
+
         self.index_path = Path(index_path)
         self.manifest_path = Path(manifest_path)
 
@@ -428,10 +565,25 @@ class DenseSearch:
         if not self.manifest_path.is_file():
             raise DenseSearchError(f"清单不存在：{self.manifest_path}")
 
-        with np.load(self.index_path, allow_pickle=True) as data:
-            self._vectors = data["vectors"]
-            self._chunk_ids = [str(x) for x in data["chunk_ids"]]
-            self._meta = json.loads(str(data["meta_json"]))
+        # allow_pickle=False：拒绝任何需要反序列化的对象数组。
+        # 旧版索引用 dtype=object 存 chunk_ids，必须重建；
+        # 这里不自动兼容，避免加载不可信旧格式。
+        try:
+            with np.load(self.index_path, allow_pickle=False) as data:
+                self._vectors = data["vectors"]
+                self._chunk_ids = [str(x) for x in data["chunk_ids"]]
+                self._meta = json.loads(str(data["meta_json"]))
+        except ValueError as exc:
+            raise DenseSearchError(
+                "索引格式不受支持（可能由旧版本生成）。"
+                "出于安全考虑不允许反序列化 pickle 内容，请重建索引："
+                "python scripts/build_dense_index.py --rebuild。"
+                f"原始错误：{exc}"
+            ) from exc
+        except KeyError as exc:
+            raise DenseSearchError(
+                f"索引缺少必需字段：{exc}。请重建索引。"
+            ) from exc
 
         _validate_matrix(self._vectors, EMBEDDING_DIM)
 
@@ -446,8 +598,132 @@ class DenseSearch:
         if len(self._chunk_ids) != self._vectors.shape[0]:
             raise DenseSearchError("索引内部不一致：chunk_ids 与向量行数不符")
 
-        if any(cid not in self._by_id for cid in self._chunk_ids):
-            raise DenseSearchError("索引中存在清单里没有的 chunk_id")
+        # chunk_id 唯一性
+        if len(set(self._chunk_ids)) != len(self._chunk_ids):
+            duplicates = sorted(
+                {cid for cid in self._chunk_ids if self._chunk_ids.count(cid) > 1}
+            )
+            raise DenseSearchError(
+                f"索引中存在重复 chunk_id：{duplicates[:5]}，请重建索引"
+            )
+
+        # 与清单的双向完整对应
+        missing_in_manifest = [
+            cid for cid in self._chunk_ids if cid not in self._by_id
+        ]
+        if missing_in_manifest:
+            raise DenseSearchError(
+                f"索引中存在清单里没有的 chunk_id：{missing_in_manifest[:5]}"
+            )
+
+        manifest_ids = set(self._by_id)
+        index_ids = set(self._chunk_ids)
+        not_indexed = manifest_ids - index_ids
+        if not_indexed:
+            raise DenseSearchError(
+                f"清单中有 {len(not_indexed)} 个切片未被索引"
+                f"（如 {sorted(not_indexed)[:3]}），请重建索引"
+            )
+
+        # 模型一致性：索引记录的 commit / tokenizer 指纹必须可确认
+        self._require_model_identity()
+
+        if verify_model and self._embedder is not None:
+            self.check_model_consistency(self._embedder)
+
+    def _require_model_identity(self) -> None:
+        """索引必须记录可确认的模型身份。
+
+        缺失 commit 或 tokenizer 指纹的旧索引一律拒绝：
+        无法证明「构建索引的模型」与「查询编码器」是同一个。
+        """
+
+        missing = [
+            key
+            for key in ("model", "model_commit", "tokenizer_fingerprint")
+            if not self._meta.get(key)
+        ]
+        if missing:
+            raise DenseSearchError(
+                f"索引缺少模型身份字段 {missing}，无法确认模型一致性。"
+                f"请重建索引：python scripts/build_dense_index.py --rebuild"
+            )
+
+    def check_model_consistency(self, embedder: BGEEmbedder) -> dict:
+        """校验索引构建模型与查询编码器是否一致。
+
+        比对：模型名、commit hash、tokenizer 指纹、维度、池化、归一化。
+        **不允许仅凭维度相同就认定兼容。**
+
+        Raises:
+            DenseSearchError: 任一关键字段不一致或无法确认
+        """
+
+        # 触发加载以拿到真实指纹
+        embedder._ensure_loaded()  # noqa: SLF001
+        actual = embedder.model_fingerprint
+
+        index_commit = str(self._meta.get("model_commit") or "")
+        actual_commit = str(actual.get("commit") or "")
+
+        index_tok = str(self._meta.get("tokenizer_fingerprint") or "")
+        actual_tok = str(actual.get("tokenizer_fingerprint") or "")
+
+        problems = []
+
+        if not actual_commit:
+            problems.append("查询编码器的模型 commit 无法确认")
+        elif index_commit != actual_commit:
+            problems.append(
+                f"模型 commit 不一致：索引={index_commit[:12]}，"
+                f"编码器={actual_commit[:12]}"
+            )
+
+        if not actual_tok:
+            problems.append("查询编码器的 tokenizer 指纹无法确认")
+        elif index_tok != actual_tok:
+            problems.append(
+                f"tokenizer 指纹不一致：索引={index_tok[:12]}，"
+                f"编码器={actual_tok[:12]}"
+            )
+
+        index_model = str(self._meta.get("model") or "")
+        actual_model = str(actual.get("model") or "")
+        if index_model != actual_model:
+            problems.append(
+                f"模型名不一致：索引={index_model}，编码器={actual_model}"
+            )
+
+        index_dim = int(self._meta.get("dim") or 0)
+        if index_dim != int(actual.get("dim") or 0):
+            problems.append(
+                f"向量维度不一致：索引={index_dim}，"
+                f"编码器={actual.get('dim')}"
+            )
+
+        index_pooling = str(self._meta.get("pooling") or "")
+        if index_pooling != str(actual.get("pooling") or ""):
+            problems.append(
+                f"池化方式不一致：索引={index_pooling}，"
+                f"编码器={actual.get('pooling')}"
+            )
+
+        if bool(self._meta.get("normalized")) is not bool(
+            actual.get("normalized")
+        ):
+            problems.append("归一化方式不一致")
+
+        if problems:
+            raise DenseSearchError(
+                "索引与查询编码器不兼容，拒绝计算相似度：" + "；".join(problems)
+            )
+
+        return {
+            "consistent": True,
+            "model": index_model,
+            "commit": index_commit,
+            "tokenizer_fingerprint": index_tok,
+        }
 
     # ---- 元信息 ----
 
@@ -474,8 +750,10 @@ class DenseSearch:
             "schema": self._meta.get("schema"),
             "model": self._meta.get("model"),
             "model_commit": self._meta.get("model_commit"),
+            "tokenizer_fingerprint": self._meta.get("tokenizer_fingerprint"),
             "dim": self._meta.get("dim"),
             "pooling": self._meta.get("pooling"),
+            "normalized": self._meta.get("normalized"),
             "chunks": self.chunk_count(),
             "manifest_sha256": self._meta.get("manifest_sha256"),
             "fingerprint": self.fingerprint,
@@ -507,6 +785,10 @@ class DenseSearch:
             )
 
         embedder = embedder or self.embedder
+
+        # 每次检索前校验编码器与索引模型一致，防止换了模型却用旧向量比较
+        self.check_model_consistency(embedder)
+
         try:
             vector = embedder.encode_query(query)
         except EmbeddingError as exc:
@@ -567,6 +849,7 @@ class DenseSearch:
 
 __all__ = [
     "CACHE_SCHEMA",
+    "CacheNamespace",
     "DenseHit",
     "DenseOutcome",
     "DenseSearch",
@@ -574,4 +857,5 @@ __all__ = [
     "EmbeddingCache",
     "SCHEMA_VERSION",
     "build_dense_index",
+    "cache_namespace",
 ]
