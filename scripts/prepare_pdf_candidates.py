@@ -51,15 +51,15 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from powercopy.data.fetcher import HttpFetcher  # noqa: E402
-from powercopy.data.pdf_blank_policy import describe_blank_pages  # noqa: E402
+from powercopy.data.pdf_analyze import analyze  # noqa: E402
 from powercopy.data.pdf_ingest import (  # noqa: E402
     MAX_BYTES,
     PdfArtifact,
     PdfIngestError,
     PdfMetadata,
     ingest_pdf,
-    preview_pdf,
 )
+from powercopy.data.pdf_ocr_ingest import OcrIngestError, ingest_ocr  # noqa: E402
 from powercopy.data.pipeline import discover, load_raw, save_fetch  # noqa: E402
 from powercopy.data.sources import build_source_registry  # noqa: E402
 from powercopy.data.versioning import VersionedPolicyStore, _sha  # noqa: E402
@@ -128,6 +128,7 @@ def prepare(
     selector: str,
     limit: int = 15,
     output: Path | None = None,
+    use_ocr: bool = True,
 ) -> dict:
     """抓列表页，下载并预览候选 PDF。"""
 
@@ -169,61 +170,51 @@ def prepare(
             print(f"  {index:2}. [下载失败 {exc}] {title[:44]}")
             continue
 
-        artifact = PdfArtifact(
-            fetch_id=_sha(body)[:32],
-            acquisition_kind="manual_offline",
-            metadata=PdfMetadata(
-                source_key=source_key,
-                target_key=target_key,
-                source_url=url,
-                title=title or "未命名政策文件",
-                issuer=None,
-                region=None,
-                published_on=None,
-                retrieved_at=datetime.now(timezone.utc),
-                provenance_note=(
-                    f"由 prepare_pdf_candidates.py 从 {source_key}/"
-                    f"{target_key} 列表页发现并下载"
-                ),
-            ),
-            raw_sha256=_sha(body),
-            body_size=len(body),
-            body_base64=base64.b64encode(body).decode("ascii"),
+        # 分析：先试文本层，整篇无文字才走 OCR
+        analysis = analyze(
+            body,
+            source_key=source_key,
+            target_key=target_key,
+            url=url,
+            title=title,
+            use_ocr=use_ocr,
         )
 
-        # 保存工件
-        artifact_path = STAGING / f"{artifact.fetch_id}.json"
-        artifact_path.write_text(
-            artifact.model_dump_json(indent=2), encoding="utf-8"
-        )
-
-        try:
-            preview = preview_pdf(artifact, allow_blank_pages=True)
-        except PdfIngestError as exc:
+        if analysis["kind"] == "unparsable":
             record["status"] = "unparsable"
-            record["error"] = str(exc)
-            record["artifact"] = str(artifact_path.name)
+            record["error"] = analysis.get("error", "")
+            record["artifact"] = analysis["artifact"]
+            record["walkthrough"] = analysis.get("walkthrough", "")
             entries.append(record)
-            print(f"  {index:2}. [不可解析 {str(exc)[:30]}] {title[:34]}")
+            print(
+                f"  {index:2}. [不可解析 {str(analysis.get('error'))[:26]}] "
+                f"{title[:32]}"
+            )
             continue
 
         record.update(
             {
                 "status": "ready_for_review",
-                "artifact": artifact_path.name,
-                "pages": len(preview.pages),
-                "chars": len(preview.document.body_text),
-                "blank_pages": list(preview.blank_pages),
-                "blank_note": describe_blank_pages(list(preview.blank_pages)),
-                "review_sha256": preview.review_sha256,
-                "content_sha256": preview.content_sha256,
+                "extract_kind": analysis["kind"],
+                "artifact": analysis["artifact"],
+                "pages": analysis["pages"],
+                "chars": analysis["chars"],
+                "blank_pages": analysis.get("blank_pages", []),
+                "blank_note": analysis.get("blank_note", ""),
+                "review_sha256": analysis["review_sha256"],
+                "content_sha256": analysis.get("content_sha256", ""),
+                "text_sha256": analysis.get("text_sha256", ""),
+                "ocr_engine": analysis.get("ocr_engine", ""),
+                "ocr_text_file": analysis.get("ocr_text_file", ""),
+                "walkthrough": analysis.get("walkthrough", ""),
             }
         )
         entries.append(record)
 
+        tag = "OCR" if analysis["kind"] == "pdf_ocr" else "文本层"
         print(
-            f"  {index:2}. [待审批] {len(preview.pages):3} 页 "
-            f"{len(preview.document.body_text):6} 字  {title[:34]}"
+            f"  {index:2}. [待审批/{tag}] {analysis['pages']:3} 页 "
+            f"{analysis['chars']:6} 字  {title[:32]}"
         )
 
     manifest = {
@@ -322,16 +313,28 @@ def ingest(manifest_path: Path, approvals_path: Path, db: Path) -> int:
             from powercopy.data.pdf_ingest import load_pdf_artifact
 
             artifact = load_pdf_artifact(artifact_path)
-            result = ingest_pdf(
-                store,
-                artifact,
-                approved_sha256=approved_sha,
-                allow_blank_pages=True,
-            )
+
+            if entry.get("extract_kind") == "pdf_ocr":
+                result = ingest_ocr(
+                    store, artifact, approved_sha256=approved_sha
+                )
+                kind_tag = "OCR"
+            else:
+                result = ingest_pdf(
+                    store,
+                    artifact,
+                    approved_sha256=approved_sha,
+                    allow_blank_pages=True,
+                )
+                kind_tag = "文本"
+
             print(
-                f"  [入库] {result.action:9} {entry['title'][:40]}"
+                f"  [入库/{kind_tag}] {result.action:9} {entry['title'][:36]}"
             )
             done += 1
+        except OcrIngestError as exc:
+            print(f"  [OCR失败 {str(exc)[:30]}] {entry['title'][:32]}")
+            failed += 1
         except PdfIngestError as exc:
             print(f"  [失败 {str(exc)[:34]}] {entry['title'][:34]}")
             failed += 1
@@ -355,6 +358,11 @@ def main() -> int:
     parser.add_argument("--approvals", type=Path,
                         default=ROOT / "config" / "pdf_approval.json")
     parser.add_argument("--db", type=Path, default=DB)
+    parser.add_argument(
+        "--no-ocr",
+        action="store_true",
+        help="整篇无文本层时不使用 OCR（默认会用）",
+    )
     args = parser.parse_args()
 
     if args.ingest:
@@ -378,6 +386,7 @@ def main() -> int:
         selector=selector,
         limit=args.limit,
         output=args.json,
+        use_ocr=not args.no_ocr,
     )
     return 0
 
