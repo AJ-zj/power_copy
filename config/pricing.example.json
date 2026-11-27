@@ -1,0 +1,15 @@
+{
+  "_comment": "示例单价配置。这是格式示例，不是真实价格。真实单价必须从服务商官网核实后填入，并写明核实来源与日期。不要用示例值做任何成本判断或对外报价。",
+  "currency": "CNY",
+  "rules": [
+    {
+      "provider": "example-provider",
+      "model": "example-model",
+      "input_per_million": "0.00",
+      "output_per_million": "0.00",
+      "price_version": "placeholder",
+      "source": "示例占位，未核实：请替换为服务商官网定价页链接与核实日期",
+      "note": "把 input_per_million / output_per_million 改成核实后的单价（元/百万 Token）"
+    }
+  ]
+}

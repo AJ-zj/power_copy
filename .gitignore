@@ -30,6 +30,7 @@ storage/models/
 storage/research/
 storage/copywriting/
 storage/workflow/
+storage/cost/
 workspace/
 *.sqlite3
 *.sqlite3-journal
@@ -61,3 +62,6 @@ Thumbs.db
 # ---------------------------------------------------------------- 本机专用（不入库）
 _local_only*
 *.local.py
+
+# 真实单价配置（由运维从服务商官网核实后本地填写，不入公开仓库）
+config/pricing.json

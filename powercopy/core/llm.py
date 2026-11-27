@@ -159,9 +159,20 @@ class LLMClient:
         schema=None,
         *,
         tools=None,
-        budget: TaskBudget | None = None
+        budget: TaskBudget | None = None,
+        cost_hook=None,
+        daily_guard=None,
     ):
-        """统一管理模型请求、输出校验与重试。"""
+        """统一管理模型请求、输出校验与重试。
+
+        Args:
+            budget: 任务级预算（请求次数硬上限 + Token 软预算）
+            cost_hook: 可选的调用记录器（`powercopy.cost.CallRecorder`）。
+                传入时每次实际请求尝试都写一条台账记录。
+                **保持 core 层零依赖**：不传就完全不记录。
+            daily_guard: 可选的每日预算守卫（`DailyBudgetGuard`）。
+                在每次请求发出前检查当日的请求/Token 上限。
+        """
 
         policy = self.retry_policy
         selected_model = model or self.model
@@ -175,7 +186,17 @@ class LLMClient:
         # 浅拷贝：后续追加修复指令不会修改调用者传入的列表
         request_messages = list(messages)
 
+        # 提示词摘要（只用于台账，不存原文）
+        prompt_text = "\n".join(
+            str(m.get("content") or "") for m in messages
+            if isinstance(m, dict)
+        )
+
         for attempt in range(1, policy.max_attempts + 1):
+
+            # ---- 每日预算检查（在请求发出前）----
+            if daily_guard is not None:
+                daily_guard.check()
 
             # 本次新增：预算检查放在 try 外部，
             # 避免 BudgetExceeded 被当成普通 API 异常处理
@@ -206,6 +227,22 @@ class LLMClient:
 
                 if budget is not None:
                     budget.record_usage(tokens)
+
+                # 2b. 台账记录（成功）
+                if cost_hook is not None:
+                    from powercopy.cost.recorder import usage_from_response
+                    from powercopy.cost.contracts import RequestOutcome
+
+                    cost_hook.record_attempt(
+                        outcome=RequestOutcome.SUCCESS,
+                        usage=usage_from_response(result),
+                        model=str(result.get("model") or selected_model or ""),
+                        latency_ms=round(
+                            (time.perf_counter() - start) * 1000, 2
+                        ),
+                        retry_index=attempt - 1,
+                        prompt_text=prompt_text,
+                    )
 
                 # 3. 按需执行结构化校验
                 stage = "output"
@@ -272,6 +309,22 @@ class LLMClient:
                     if budget is not None:
                         budget.record_usage(None)
 
+                    # 台账记录（失败）：用量未知，绝不当 0
+                    if cost_hook is not None:
+                        from powercopy.cost.recorder import outcome_from_error
+                        from powercopy.cost.contracts import Usage
+
+                        cost_hook.record_attempt(
+                            outcome=outcome_from_error(error),
+                            usage=Usage(complete=False),
+                            model=selected_model or "",
+                            latency_ms=latency_ms,
+                            retry_index=attempt - 1,
+                            prompt_text=prompt_text,
+                            note=f"{type(error).__name__}: "
+                                 f"{str(error)[:120]}（用量未知）",
+                        )
+
                 # ---- 结构化输出格式错误：追加修复指令后重试 ----
                 if (
                     stage == "output"
@@ -333,14 +386,18 @@ class LLMClient:
         model=None,
         *,
         tools=None,
-        budget: TaskBudget | None = None
+        budget: TaskBudget | None = None,
+        cost_hook=None,
+        daily_guard=None,
     ):
         """普通文本调用入口（重试由 _execute 统一管理）。"""
         return self._execute(
             messages=messages,
             model=model,
             tools=tools,
-            budget=budget
+            budget=budget,
+            cost_hook=cost_hook,
+            daily_guard=daily_guard,
         )
 
     def invoke_structured(
@@ -349,7 +406,9 @@ class LLMClient:
         schema: type[BaseModel],
         model=None,
         *,
-        budget: TaskBudget | None = None
+        budget: TaskBudget | None = None,
+        cost_hook=None,
+        daily_guard=None,
     ):
         """结构化输出入口（复用 _execute，避免嵌套重试）。"""
 
@@ -376,7 +435,9 @@ class LLMClient:
             messages=request_messages,
             model=model,
             schema=schema,
-            budget=budget
+            budget=budget,
+            cost_hook=cost_hook,
+            daily_guard=daily_guard,
         )
 
 
