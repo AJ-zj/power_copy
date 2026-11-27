@@ -135,15 +135,19 @@ class ResearchAgent:
         budget: ResearchBudget | None = None,
         planner: Any = None,
         extractor: Any = None,
+        shared_budget: Any = None,
     ):
         """
         Args:
             llm: 规划与提取使用的模型客户端（可为 Mock）
             registry: 工具注册表（含 search_policy_evidence 等）
             corpus: 本地政策库与切片清单
-            budget: 任务预算
+            budget: 阶段预算上限（max_questions / max_tool_calls 等）
             planner: 可选的规划器替身（测试用）
             extractor: 可选的提取器替身（测试用）
+            shared_budget: 跨阶段共享的预算（SharedBudget）。
+                传入时**以它为准**，不再另建 TaskBudget ——
+                这样研究、生成、审核共享同一份剩余额度。
         """
 
         self.llm = llm
@@ -154,6 +158,7 @@ class ResearchAgent:
         self.verifier = EvidenceVerifier(corpus)
         self.planner = planner
         self.extractor = extractor
+        self.shared_budget = shared_budget
 
     # ---- 主流程 ----
 
@@ -170,10 +175,15 @@ class ResearchAgent:
         # 统一预算：真实 LLM 调用与内部重试都受 TaskBudget 约束。
         # 之前只用一个自增的 tool_calls 计数器管工具，模型调用完全没有预算，
         # 真实 LLM 模式下可能无限调用。
-        core_budget = TaskBudget(
-            max_api_attempts=self.budget.max_api_attempts,
-            max_known_tokens=self.budget.max_known_tokens,
-        )
+        #
+        # 若外部传入了 shared_budget（跨阶段共享），直接复用它 ——
+        # 否则新建一个阶段内预算。
+        core_budget = self.shared_budget
+        if core_budget is None:
+            core_budget = TaskBudget(
+                max_api_attempts=self.budget.max_api_attempts,
+                max_known_tokens=self.budget.max_known_tokens,
+            )
 
         ctx = ResearchContext(
             request=request,
@@ -682,34 +692,25 @@ class ResearchAgent:
 
         budget = ctx.budget
         if budget is not None:
-            # 先检查是否已经耗尽，再预占一次尝试
+            # 只做「是否已耗尽」的前置检查；预占与 usage 累计由
+            # LLMClient._execute 内部完成，避免重复计数。
             stop = budget.stop_reason()
             if stop is not None:
                 raise BudgetExhausted(f"模型预算耗尽（{stop}）")
-            try:
-                budget.reserve_api_attempt()
-            except CoreBudgetExceeded as exc:
-                raise BudgetExhausted(
-                    f"模型预算耗尽（{getattr(exc, 'reason', 'unknown')}）"
-                ) from exc
 
         try:
-            response = self.llm.invoke(messages)
+            # 关键：把 budget 传给 LLMClient，让内部每次真实请求
+            # （含重试）都受同一预算约束。旧实现在外部 reserve 后
+            # 不传 budget，导致内部重试完全不受控。
+            response = self.llm.invoke(messages, budget=budget)
+        except CoreBudgetExceeded as exc:
+            if budget is not None and hasattr(budget, "_exhausted_by"):
+                pass
+            raise BudgetExhausted(
+                f"模型预算耗尽（{getattr(exc, 'reason', 'unknown')}）"
+            ) from exc
         except Exception as exc:
             raise ResearchError(f"模型调用失败：{exc}") from exc
-
-        # 记录 token 消耗（若模型返回 usage）
-        if budget is not None and isinstance(response, dict):
-            usage = response.get("usage")
-            tokens = None
-            if isinstance(usage, dict):
-                tokens = usage.get("total_tokens")
-            elif isinstance(usage, int):
-                tokens = usage
-            if isinstance(tokens, int) and tokens >= 0:
-                budget.record_usage(tokens)
-            else:
-                budget.record_usage(None)
 
         raw = response.get("content") if isinstance(response, dict) else None
         if not raw:

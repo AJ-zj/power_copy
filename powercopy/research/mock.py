@@ -218,7 +218,21 @@ class MockResearchLLM:
         self.calls: list[dict] = []
 
     def invoke(self, messages, model=None, **kwargs) -> dict:
+        """模拟 LLMClient.invoke。
+
+        **预算行为与真实 LLMClient 一致**：
+        收到 `budget` 时预占一次 attempt 并累计 usage（Mock 的 usage 为 0）。
+        这样 Mock 模式下也能验证预算耗尽逻辑，而不是"只测真实模式"。
+        """
+
+        budget = kwargs.get("budget")
+        if budget is not None:
+            budget.reserve_api_attempt()
+
         self.calls.append({"messages": messages, "model": model})
+
+        if budget is not None:
+            budget.record_usage(0)
 
         if self.fail_mode == "invalid_json":
             return {"content": "这不是 JSON", "model": "mock"}
