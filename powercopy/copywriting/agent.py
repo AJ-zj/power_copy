@@ -390,12 +390,18 @@ class CopywritingAgent:
             {"role": "user", "content": user_prompt},
         ]
 
+        # 预算交给 LLMClient 内部管理。
+        #
+        # 旧实现在这里手动 reserve_api_attempt()，但调用 invoke 时没有
+        # 传 budget，导致：
+        #   - LLMClient._execute 内部的每次真实请求（含重试）不受约束
+        #   - 外部这次预占与内部计数各记一笔，账目对不上
+        # 现在统一由 LLMClient 负责预占与 usage 累计。
         stop = budget.stop_reason()
         if stop is not None:
             raise CoreBudgetExceeded(stop)
-        budget.reserve_api_attempt()
 
-        response = self.llm.invoke(messages)
+        response = self.llm.invoke(messages, budget=budget)
 
         usage = self._extract_usage(response, budget)
         raw = response.get("content") if isinstance(response, dict) else None
@@ -406,23 +412,25 @@ class CopywritingAgent:
         return parsed, usage
 
     @staticmethod
-    def _extract_usage(response, budget: TaskBudget) -> dict:
+    def _extract_usage(response, budget) -> dict:
+        """整理 usage 用于写入 ContentDraft。
+
+        **不在这里调用 budget.record_usage()** —— LLMClient._execute
+        内部已经累计过了。外部再记一次会重复计数。
+        这里只读取快照用于展示。
+        """
+
         usage_payload = (
             response.get("usage") if isinstance(response, dict) else None
         )
         if isinstance(usage_payload, dict):
             total = usage_payload.get("total_tokens")
-            if isinstance(total, int) and total >= 0:
-                budget.record_usage(total)
-            else:
-                budget.record_usage(None)
             return {
                 "input_tokens": usage_payload.get("input_tokens"),
                 "output_tokens": usage_payload.get("output_tokens"),
                 "total_tokens": total,
                 **CopywritingAgent._budget_snapshot(budget),
             }
-        budget.record_usage(None)
         return {
             "input_tokens": None,
             "output_tokens": None,
@@ -431,7 +439,17 @@ class CopywritingAgent:
         }
 
     @staticmethod
-    def _budget_snapshot(budget: TaskBudget) -> dict:
+    def _budget_snapshot(budget) -> dict:
+        """读取预算快照。兼容 TaskBudget 与 SharedBudget。"""
+
+        if hasattr(budget, "to_dict"):
+            payload = budget.to_dict()
+            return {
+                "api_attempts": payload.get("used_api_attempts"),
+                "known_total_tokens": payload.get("known_total_tokens"),
+                "usage_incomplete": payload.get("usage_incomplete"),
+            }
+
         snap = budget.snapshot()
         return {
             "api_attempts": snap.get("api_attempts"),

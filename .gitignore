@@ -29,6 +29,7 @@ storage/rag/
 storage/models/
 storage/research/
 storage/copywriting/
+storage/workflow/
 workspace/
 *.sqlite3
 *.sqlite3-journal

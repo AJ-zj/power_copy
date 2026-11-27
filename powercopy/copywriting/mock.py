@@ -121,7 +121,21 @@ class MockCopywriterLLM:
         self.calls: list[dict] = []
 
     def invoke(self, messages, model=None, **kwargs) -> dict:
+        """模拟 LLMClient.invoke。
+
+        **预算行为与真实 LLMClient 一致**：收到 `budget` 时预占一次
+        attempt 并记录 usage。Mock 的 usage 恒为 0 token，但 attempt
+        计数是真实的 —— 这样 Mock 模式下也能验证预算耗尽。
+        """
+
+        budget = kwargs.get("budget")
+        if budget is not None:
+            budget.reserve_api_attempt()
+
         self.calls.append({"messages": messages, "model": model})
+
+        if budget is not None:
+            budget.record_usage(0)
 
         if self.fail_mode == "invalid_json":
             return {"content": "这不是 JSON", "model": "mock-copywriter"}
