@@ -164,7 +164,7 @@ def build_content_router(project_root: Path) -> APIRouter:
             "mock_available": available,
             "live_available": available and live_configured(project),
             "review_available": available,
-            "maximum_automatic_revisions": 1,
+            "maximum_automatic_revisions": 3,
             "human_confirmation_available": False,
             "release_available": False,
         }}

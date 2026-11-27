@@ -725,12 +725,21 @@ class TestWorkflow:
         assert result.revision is None
 
     def test_budget_shared_across_stages(self, service):
-        result = service.run(self._request(max_api_attempts=3))
-        budget = result.budget_snapshot
-        # 预算被多阶段共用
-        assert budget["used_api_attempts"] > 0
-        if result.final_status is WorkflowStatus.BUDGET_EXHAUSTED:
-            assert budget["exhausted_by"]
+        from powercopy.copywriting.mock import MockCopywriterLLM
+        from powercopy.research.mock import MockResearchLLM
+
+        researcher = MockResearchLLM(max_questions=3)
+        copywriter = MockCopywriterLLM()
+        workflow = ContentWorkflowService(
+            service.corpus, service.registry,
+            research_llm=researcher, copywriting_llm=copywriter,
+        )
+        result = workflow.run(self._request(enable_review=False))
+
+        assert result.final_status is WorkflowStatus.DRAFT_READY
+        assert len(researcher.calls) > 0
+        assert len(copywriter.calls) == 1
+        assert result.budget_snapshot["used_api_attempts"] == len(researcher.calls) + 1
 
     def test_budget_exhausted_stops(self, service):
         result = service.run(self._request(max_api_attempts=1))

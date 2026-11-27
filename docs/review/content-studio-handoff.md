@@ -4,15 +4,13 @@ Content Studio 的创作请求经 `workbench` 交给共享 `ContentWorkflowServi
 
 ## 实际验证
 
-- Windows Node 24.22.3 与 pnpm。TypeScript 类型检查及 Vite 6.4.6 生产构建通过。
-- 从真实 FastAPI 发起 Mock 创作得到 HTTP 200、`pending_review`、政策证据、可编辑草稿和机器审核报告。测试问题为“工商业企业参与电力市场有哪些基本规则”，请求地区为安徽。
-- 同一服务的 RAG 状态显示 2 份文档、26 个切片，词法与 Dense 索引就绪。此前 RAG 浏览器验证及其截图见 [RAG Studio 契约](../contracts/mvp01-retrieval-api.md)。
-- 后端全量回归 1395 项通过（67.23 秒），含 Content API 可用性、Live 双门禁、参数约束和异常脱敏用例。
-- 已启动生产预览。浏览器操作通道因无法可靠识别当前 Windows 浏览器地址而终止。Content Studio 的浏览器证据展开、编辑、空证据及截图验收待完成。真实付费模型调用未执行。
+- Windows Node 24.22.3、pnpm 11.25.0 与 Vite 6.4.6。TypeScript 类型检查和生产构建通过。
+- Edge 通过生产预览提交安徽工商业电力市场的 Mock 创作任务。FastAPI 返回 `pending_review`、16 条政策证据、四个审核维度、修订记录和 7/12 次共享模型尝试。验收中 Live 模式关闭。
+- 浏览器验证草稿引用能打开对应政策原文，修改正文后当前草稿显示待重新审核。剪贴板与文本导出都与编辑后的标题和正文完全一致。[创作结果](../screenshots/content-studio-mock.png) · [编辑后的草稿](../screenshots/content-studio-edited.png)
+- 后端全量回归 1395 项通过。共享预算回归验证研究与文案阶段的尝试总和，修订上限与 Live 门禁等 Content API 专项测试共 10 项通过。
 
 ## 已知限制
 
-- 当前整合的后端版本中，CopywritingAgent 创建独立预算。研究与审核使用工作流共享快照，快照不包含文案阶段的完整模型尝试与 Token 消耗。预算快照适用于查看已记录用量，跨阶段总限额由后端业务分支补齐后复验。
 - 政策地区与现行效力、证据与主张的语义支持性均需人工核查。草稿编辑仅保存在当前页面，复制与文本导出可带走编辑结果。
 
 ## 本机运行
@@ -32,3 +30,5 @@ pnpm dev
 ```
 
 打开 http://127.0.0.1:5173/#/content。
+
+启动前后端后，在已配置 Playwright 和 Chromium 的环境中，从项目根目录运行 `node scripts/check_content_studio.cjs`。用 `POWERCOPY_WEB_URL` 设置前端地址，脚本默认访问 `http://127.0.0.1:6184`。需要复用本机安装时可设置 `POWERCOPY_PLAYWRIGHT` 和 `POWERCOPY_BROWSER`。

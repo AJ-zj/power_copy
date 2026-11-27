@@ -341,7 +341,7 @@ class ContentWorkflowService:
         copy_agent = CopywritingAgent(
             copy_llm, mode=request.mode, model_name=self.model_name or "mock"
         )
-        draft = copy_agent.run(copy_request)
+        draft = copy_agent.run(copy_request, budget=budget)
         timings["draft_ms"] = round((time.perf_counter() - started) * 1000, 1)
 
         if draft.status is CopywritingStatus.ABORTED:

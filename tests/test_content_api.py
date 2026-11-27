@@ -118,6 +118,7 @@ def test_status_separates_data_readiness_from_workflow_readiness(project, monkey
     assert status["workflow_available"] is True
     assert status["data_available"] is False
     assert status["mock_available"] is False
+    assert status["maximum_automatic_revisions"] == 3
 
 
 def test_default_mock_run_uses_shared_workflow_defaults_and_human_review(install_client, monkeypatch):

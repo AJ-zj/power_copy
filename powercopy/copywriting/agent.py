@@ -55,6 +55,7 @@ from powercopy.copywriting.guards import (
 )
 from powercopy.core.budget import BudgetExceeded as CoreBudgetExceeded
 from powercopy.core.budget import TaskBudget
+from powercopy.core.shared_budget import SharedBudget
 from powercopy.research.contracts import (
     ClaimStatus,
     EvidencePackage,
@@ -160,7 +161,9 @@ class CopywritingAgent:
 
     # ---- 主流程 ----
 
-    def run(self, request: CopywritingRequest) -> ContentDraft:
+    def run(
+        self, request: CopywritingRequest, *, budget: SharedBudget | None = None
+    ) -> ContentDraft:
         """生成文案草稿。
 
         任何阶段失败都不抛异常，而是产出带明确状态的 ContentDraft。
@@ -186,26 +189,26 @@ class CopywritingAgent:
             )
 
         # ---- 2. 调用模型 ----
-        budget = TaskBudget(
+        active_budget = budget if budget is not None else TaskBudget(
             max_api_attempts=request.budget.max_api_attempts,
             max_known_tokens=request.budget.max_known_tokens,
         )
 
         try:
-            raw, usage = self._call_model(request, payload, budget)
+            raw, usage = self._call_model(request, payload, active_budget)
         except CoreBudgetExceeded as exc:
             return self._failed(
                 draft_id,
                 request,
                 f"模型预算耗尽（{getattr(exc, 'reason', 'unknown')}）",
-                usage=self._budget_snapshot(budget),
+                usage=self._budget_snapshot(active_budget),
             )
         except CopywritingError as exc:
             return self._failed(
                 draft_id,
                 request,
                 str(exc),
-                usage=self._budget_snapshot(budget),
+                usage=self._budget_snapshot(active_budget),
             )
 
         # ---- 3. 模型主动声明证据不足 ----
@@ -367,7 +370,7 @@ class CopywritingAgent:
 
     def _call_model(
         self, request: CopywritingRequest, payload: PromptPayload,
-        budget: TaskBudget,
+        budget: TaskBudget | SharedBudget,
     ) -> tuple[dict, dict]:
         package = request.evidence_package
 
