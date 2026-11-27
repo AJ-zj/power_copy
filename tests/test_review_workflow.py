@@ -1153,3 +1153,142 @@ class TestLiveModelFailureHandling:
         # 必须优雅失败，不能抛异常
         assert result.final_status is WorkflowStatus.FAILED
         assert "模型调用失败" in result.status_reason
+
+
+# ==========================================================================
+# 11. 旧脚本 generate_copy.py 的预算共享
+# ==========================================================================
+class TestLegacyScriptBudget:
+    """旧脚本曾为研究/文案各建独立预算（文案另拿一半），已修复为共享。"""
+
+    def _source(self) -> str:
+        return (
+            Path(__file__).resolve().parents[1]
+            / "scripts" / "generate_copy.py"
+        ).read_text(encoding="utf-8")
+
+    def test_uses_shared_budget(self):
+        assert "SharedBudget" in self._source()
+
+    def test_passes_shared_budget_to_research(self):
+        assert "shared_budget=shared_budget" in self._source()
+
+    def test_no_halving_of_budget(self):
+        """文案阶段不再额外减半（旧实现让总上限翻倍）。"""
+        source = self._source()
+        assert "// 2" not in source, "不应再把预算减半"
+
+    def test_copywriting_budget_capped(self):
+        """文案阶段预算按契约上限封顶，不透传。"""
+        source = self._source()
+        assert "min(args.max_api_attempts, 20)" in source
+        assert "min(args.max_known_tokens, 100_000)" in source
+
+    def test_shared_budget_created_once(self):
+        source = self._source()
+        assert source.count("SharedBudget(") == 1
+
+
+class TestBudgetSpanAllStages:
+    """核实共享预算贯穿研究/生成/审核/修订四个阶段。"""
+
+    def _workflow_source(self) -> str:
+        return (
+            Path(__file__).resolve().parents[1]
+            / "powercopy" / "workflows" / "content.py"
+        ).read_text(encoding="utf-8")
+
+    def test_shared_budget_created_once(self):
+        assert self._workflow_source().count("SharedBudget(") == 1
+
+    def test_research_gets_shared_budget(self):
+        assert "shared_budget=budget" in self._workflow_source()
+
+    def test_review_gets_budget(self):
+        assert "budget=budget" in self._workflow_source()
+
+    @needs_real
+    def test_all_stages_consume_same_budget(self):
+        """四阶段共用一份预算，attempts 单调递增。"""
+        from powercopy.tools.builtin.policy_tools import build_live_registry
+
+        registry = build_live_registry(DB)
+        corpus = PolicyCorpus(DB, MANIFEST)
+        service = ContentWorkflowService(corpus, registry, model_name="mock")
+
+        result = service.run(
+            ContentWorkflowRequest(
+                topic="工商业企业参与电力市场前，需要了解哪些基本规则？",
+                target_audience="工商业用电企业",
+                max_questions=2,
+                max_tool_calls=3,
+                max_api_attempts=20,
+                enable_revision=True,
+            )
+        )
+
+        budget = result.budget_snapshot
+        assert budget["used_api_attempts"] > 0
+        assert budget["used_api_attempts"] <= budget["max_api_attempts"]
+        # 预算是共享的：单阶段不会各自拿满额再相加
+        assert budget["max_api_attempts"] == 20
+
+
+class TestAuditScriptVerification:
+    """静态核实：所有 llm.invoke 都必须传 budget。"""
+
+    def test_all_invoke_calls_pass_budget(self):
+        import ast
+
+        root = Path(__file__).resolve().parents[1]
+        targets = [
+            "powercopy/research/agent.py",
+            "powercopy/copywriting/agent.py",
+            "powercopy/review/agent.py",
+        ]
+
+        offenders = []
+        for rel in targets:
+            path = root / rel
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=rel)
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                name = ""
+                if isinstance(func, ast.Attribute):
+                    name = func.attr
+                elif isinstance(func, ast.Name):
+                    name = func.id
+                if name != "invoke":
+                    continue
+                if not any(kw.arg == "budget" for kw in node.keywords):
+                    offenders.append(f"{rel}:{node.lineno}")
+
+        assert not offenders, f"存在未传 budget 的 invoke：{offenders}"
+
+    def test_no_manual_reserve_outside_llm(self):
+        """除 llm.py 外不得有手动 reserve_api_attempt（避免重复计数）。"""
+        import ast
+
+        root = Path(__file__).resolve().parents[1]
+        targets = [
+            "powercopy/research/agent.py",
+            "powercopy/copywriting/agent.py",
+            "powercopy/review/agent.py",
+            "powercopy/workflows/content.py",
+        ]
+
+        offenders = []
+        for rel in targets:
+            path = root / rel
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=rel)
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                name = func.attr if isinstance(func, ast.Attribute) else ""
+                if name in ("reserve_api_attempt", "record_usage"):
+                    offenders.append(f"{rel}:{node.lineno} {name}")
+
+        assert not offenders, f"存在手动预算操作：{offenders}"

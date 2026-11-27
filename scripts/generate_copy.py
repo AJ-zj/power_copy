@@ -46,6 +46,7 @@ from powercopy.copywriting.contracts import (  # noqa: E402
     Platform,
 )
 from powercopy.copywriting.mock import MockCopywriterLLM  # noqa: E402
+from powercopy.core.shared_budget import SharedBudget  # noqa: E402
 from powercopy.research.agent import ResearchAgent  # noqa: E402
 from powercopy.research.contracts import (  # noqa: E402
     ResearchBudget,
@@ -238,6 +239,14 @@ def main() -> int:
     corpus = PolicyCorpus(args.db, args.manifest)
     registry = build_live_registry(args.db)
 
+    # 两个阶段共用同一份预算。
+    # 旧实现为研究阶段和文案阶段各建一个 TaskBudget（文案拿一半），
+    # 导致整个任务的真实上限是两者之和，与用户设定不符。
+    shared_budget = SharedBudget(
+        max_api_attempts=args.max_api_attempts,
+        max_known_tokens=args.max_known_tokens,
+    )
+
     # ---- 阶段一：研究 ----
     research_request = ResearchRequest(
         topic=args.topic,
@@ -266,7 +275,11 @@ def main() -> int:
         )
 
     research_agent = ResearchAgent(
-        research_llm, registry, corpus, budget=research_request.task_budget
+        research_llm,
+        registry,
+        corpus,
+        budget=research_request.task_budget,
+        shared_budget=shared_budget,
     )
     package = research_agent.run(research_request)
     print_research(package)
@@ -280,9 +293,11 @@ def main() -> int:
         style=args.style,
         purpose=args.purpose,
         evidence_package=package,
+        # 阶段字段只是契约占位，真正的约束是 shared_budget；
+        # 不再额外减半（旧实现让文案阶段另拿一半，导致总上限翻倍）
         budget=CopywritingBudget(
-            max_api_attempts=max(1, args.max_api_attempts // 2),
-            max_known_tokens=max(500, args.max_known_tokens // 2),
+            max_api_attempts=min(args.max_api_attempts, 20),
+            max_known_tokens=min(args.max_known_tokens, 100_000),
         ),
     )
 
