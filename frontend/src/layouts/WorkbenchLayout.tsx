@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from 'react'
 import {
   Activity, Archive, ArrowUpRight, AudioLines, Blocks, BookOpen, ChevronRight, Database,
-  FileClock, FlaskConical, GitBranch, Globe2, LayoutDashboard, Layers3, Menu, Network,
+  FileClock, FileText, FlaskConical, GitBranch, Globe2, LayoutDashboard, Layers3, Menu, Network,
   PenLine, Radio, ScanLine, Wrench, X, Zap,
 } from 'lucide-react'
 import { useApi } from '../hooks/useApi'
@@ -11,6 +11,7 @@ const primary = [
   { path: '/overview', label: '项目总览', icon: LayoutDashboard },
   { path: '/rag', label: 'RAG Studio', icon: Layers3 },
   { path: '/content', label: 'Content Studio', icon: PenLine },
+  { path: '/daily-report', label: '每日报告', icon: FileText },
   { path: '/playground', label: 'Agent Playground', icon: FlaskConical },
   { path: '/observability', label: '可观测中心', icon: Activity },
   { path: '/tools', label: 'Tool Registry', icon: Wrench },

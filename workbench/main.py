@@ -24,6 +24,7 @@ if os.environ.get("POWERCOPY_WORKBENCH_ALLOW_LIVE") == "1":
 
 from powercopy.api.main import app
 from workbench.content_api import build_content_router
+from workbench.daily_report import build_daily_report_router
 from workbench.data_api import build_data_router, overview_data
 from workbench.retrieval_api import build_retrieval_router
 from workbench.runtime_api import build_runtime_router
@@ -71,6 +72,7 @@ app.include_router(build_data_router(PROJECT), prefix=PREFIX)
 app.include_router(build_runtime_router(PROJECT), prefix=PREFIX)
 app.include_router(build_retrieval_router(PROJECT), prefix=PREFIX)
 app.include_router(build_content_router(PROJECT), prefix=PREFIX)
+app.include_router(build_daily_report_router(PROJECT, WORKSPACE), prefix=PREFIX)
 
 
 @app.get(PREFIX + "/overview")

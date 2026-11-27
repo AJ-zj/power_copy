@@ -1,0 +1,16 @@
+.daily-filter { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; margin-bottom: 16px; }
+.daily-filter input { width: auto; color-scheme: dark; }
+.daily-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; align-items: start; }
+.daily-panel { display: grid; gap: 10px; overflow-wrap: anywhere; }
+.daily-panel h2 { font-size: 17px; }
+.daily-panel h3 { font-size: 15px; }
+.daily-panel > .badge { width: fit-content; }
+.daily-note { display: grid; gap: 4px; }
+.daily-note textarea { resize: vertical; }
+.daily-list { list-style: none; margin: 0; padding: 0; }
+.daily-list li { display: grid; gap: 3px; padding: 9px 0; border-top: 1px solid var(--line); }
+.daily-list small { color: var(--muted); }
+
+@media (max-width: 850px) {
+  .daily-grid { grid-template-columns: minmax(0, 1fr); }
+}
