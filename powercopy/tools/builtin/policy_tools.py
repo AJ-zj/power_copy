@@ -164,15 +164,40 @@ def build_mock_registry() -> ToolRegistry:
 
 def build_live_registry(
     db_path: str | Path | None = None,
+    *,
+    with_retrieval: bool = True,
+    rag_dir: str | Path | None = None,
 ) -> ToolRegistry:
     """真实数据库工具入口。
 
     数据库路径来自程序配置，模型无法指定；
     连接以 SQLite `mode=ro` + `PRAGMA query_only` 打开。
+
+    Args:
+        db_path: 政策库路径（程序配置，模型不可控）
+        with_retrieval: 是否注册混合检索证据工具。
+            索引缺失时该工具会被注册但首次调用返回 RAG_INDEX_UNAVAILABLE，
+            不影响 search_policy / get_policy_detail 使用。
+        rag_dir: 检索索引目录（程序配置，模型不可控）
     """
 
     registry = ToolRegistry()
-    register_policy_tools(registry, PolicyQueryService(resolve_db_path(db_path)))
+    resolved_db = resolve_db_path(db_path)
+    register_policy_tools(registry, PolicyQueryService(resolved_db))
+
+    if with_retrieval:
+        # 延迟导入避免循环依赖
+        from powercopy.tools.builtin.retrieval import (
+            PolicyEvidenceService,
+            RetrievalPaths,
+            register_evidence_tool,
+        )
+
+        service = PolicyEvidenceService(
+            RetrievalPaths.resolve(rag_dir), db_path=resolved_db
+        )
+        register_evidence_tool(registry, service)
+
     return registry
 
 
