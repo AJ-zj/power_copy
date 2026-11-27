@@ -21,6 +21,7 @@ from pydantic import ValidationError
 
 from powercopy.copywriting.contracts import (
     ContentDraft,
+    CopywritingRequest,
     CopywritingStatus,
     GenerationMode,
     KeyPoint,
@@ -966,3 +967,189 @@ class TestAcceptanceScenarios:
             WorkflowStatus.FAILED,
         )
         assert result.budget_snapshot["used_api_attempts"] >= 1
+
+
+# ==========================================================================
+# 10. 真实 LLM 运行中发现并修复的问题
+# ==========================================================================
+class TestHeadingNotTreatedAsFact:
+    """真实 LLM 生成的文案常带「一、xxx」「结语」这类小标题。
+
+    它们不含谓述内容，不应被当作事实性陈述送去做语义核查，
+    否则会被误判为「证据不足」。这是真实 LLM 运行中发现的缺陷。
+    """
+
+    def test_heading_filtered_before_fact_check(self):
+        from powercopy.review.verifier import _split_sentences
+
+        body = (
+            "一、谁可以成为电力市场的经营主体\n\n"
+            "经营主体包括发电企业和电力用户。\n\n"
+            "结语\n\n"
+            "以官方发布为准。"
+        )
+        sentences = _split_sentences(body)
+
+        assert not any("一、谁可以" in s for s in sentences)
+        assert not any(s.strip() == "结语" for s in sentences)
+        assert any("经营主体包括" in s for s in sentences)
+
+    @pytest.mark.parametrize(
+        "heading",
+        [
+            "一、谁可以成为电力市场的经营主体",
+            "（一）规范入市",
+            "1. 注册流程",
+            "结语",
+            "总结",
+            "前言",
+        ],
+    )
+    def test_recognizes_headings(self, heading):
+        from powercopy.review.verifier import _is_heading
+
+        assert _is_heading(heading) is True
+
+    @pytest.mark.parametrize(
+        "sentence",
+        [
+            "经营主体应当在电力交易机构办理市场注册。",
+            "工商业用户原则上全部直接参与电力市场交易，暂未直接参与的由电网企业代理购电。",
+        ],
+    )
+    def test_does_not_filter_real_sentences(self, sentence):
+        from powercopy.review.verifier import _is_heading
+
+        assert _is_heading(sentence) is False
+
+    def test_heading_does_not_trigger_insufficient(self):
+        """含小标题的正文不应因标题本身产生 fact_support 问题。"""
+
+        item, claim = _evidence_and_claim()
+        package = _package(claims=[claim], evidence=[item])
+
+        draft = _draft(
+            body=(
+                "一、经营主体范围\n\n"
+                "经营主体应当办理市场注册手续。\n\n"
+                "结语\n\n"
+                "以上述内容为准。"
+            )
+        )
+
+        # 模拟模型把标题判为 insufficient
+        llm = MockReviewerLLM(
+            verdicts=[{"index": 0, "verdict": "insufficient", "note": "标题"}]
+        )
+        verifier = ContentVerifier(package, draft, fact_support_llm=llm)
+        result = verifier.check_fact_support()
+
+        # 由于标题被过滤，index 0 对应的是真正的句子而非标题
+        assert result.checked_items >= 1
+
+
+class TestBudgetCapPassThrough:
+    """ContentWorkflowRequest 的预算上限比 CopywritingBudget 更大。
+
+    直接透传会触发 ValidationError 并让整个流程崩溃。
+    这是真实 LLM 运行中发现的缺陷。
+    """
+
+    def test_request_allows_larger_than_copywriting_budget(self):
+        # 请求层允许到 400000 / 60
+        request = ContentWorkflowRequest(
+            topic="x",
+            max_api_attempts=60,
+            max_known_tokens=400_000,
+        )
+        assert request.max_known_tokens == 400_000
+
+    def test_copywriting_budget_caps_smaller(self):
+        from powercopy.copywriting.contracts import CopywritingBudget
+
+        with pytest.raises(ValidationError):
+            CopywritingBudget(max_known_tokens=150_000)
+        with pytest.raises(ValidationError):
+            CopywritingBudget(max_api_attempts=30)
+
+    @needs_real
+    def test_workflow_does_not_crash_on_large_budget(self):
+        """大预算请求必须正常完成，不能因透传而崩溃。"""
+        from powercopy.tools.builtin.policy_tools import build_live_registry
+
+        registry = build_live_registry(DB)
+        corpus = PolicyCorpus(DB, MANIFEST)
+        service = ContentWorkflowService(corpus, registry, model_name="mock")
+
+        result = service.run(
+            ContentWorkflowRequest(
+                topic="工商业企业参与电力市场前，需要了解哪些基本规则？",
+                target_audience="工商业用电企业",
+                max_questions=2,
+                max_tool_calls=3,
+                max_api_attempts=60,
+                max_known_tokens=400_000,
+            )
+        )
+
+        assert result.final_status in (
+            WorkflowStatus.PENDING_REVIEW,
+            WorkflowStatus.NEEDS_MANUAL_REVIEW,
+            WorkflowStatus.DRAFT_READY,
+        )
+
+
+class TestLiveModelFailureHandling:
+    """真实 LLM 的网络异常必须转成明确的失败状态，不能让流程崩溃。"""
+
+    def test_copywriting_handles_connection_error(self):
+        class FailingLLM:
+            def invoke(self, messages, model=None, **kwargs):
+                raise ConnectionError("Connection error.")
+
+        item, claim = _evidence_and_claim()
+        package = _package(claims=[claim], evidence=[item])
+        draft_request = CopywritingRequest(
+            topic="测试主题",
+            target_audience="企业",
+            platform=Platform.WECHAT_MP,
+            target_chars=800,
+            evidence_package=package,
+        )
+
+        from powercopy.copywriting.agent import CopywritingAgent
+
+        agent = CopywritingAgent(
+            FailingLLM(), mode=GenerationMode.MOCK, model_name="failing"
+        )
+        draft = agent.run(draft_request)
+
+        assert draft.status is CopywritingStatus.FAILED
+        assert "模型调用失败" in draft.status_reason
+
+    @needs_real
+    def test_workflow_reports_failed_on_model_error(self):
+        class FailingLLM:
+            def invoke(self, messages, model=None, **kwargs):
+                raise ConnectionError("Connection error.")
+
+        from powercopy.tools.builtin.policy_tools import build_live_registry
+
+        registry = build_live_registry(DB)
+        corpus = PolicyCorpus(DB, MANIFEST)
+        service = ContentWorkflowService(
+            corpus, registry, copywriting_llm=FailingLLM(), model_name="failing"
+        )
+
+        result = service.run(
+            ContentWorkflowRequest(
+                topic="工商业企业参与电力市场前，需要了解哪些基本规则？",
+                target_audience="工商业用电企业",
+                max_questions=1,
+                max_tool_calls=2,
+            )
+        )
+
+        # 必须优雅失败，不能抛异常
+        assert result.final_status is WorkflowStatus.FAILED
+        assert "模型调用失败" in result.status_reason

@@ -284,6 +284,11 @@ class ContentWorkflowService:
 
         # ---- 阶段 1：研究 ----
         started = time.perf_counter()
+
+        # ResearchBudget 的字段上限（max_api_attempts ≤ 30、
+        # max_known_tokens ≤ 200000）比 ContentWorkflowRequest 更小。
+        # 真正的约束是共享预算，这里的阶段字段只是契约占位，
+        # 因此按契约上限取小值，避免透传触发 ValidationError。
         research_request = ResearchRequest(
             topic=request.topic,
             target_audience=request.target_audience,
@@ -292,9 +297,8 @@ class ContentWorkflowService:
             task_budget=ResearchBudget(
                 max_questions=request.max_questions,
                 max_tool_calls=request.max_tool_calls,
-                # 阶段内部上限交给共享预算，不单独给额度
-                max_api_attempts=request.max_api_attempts,
-                max_known_tokens=request.max_known_tokens,
+                max_api_attempts=min(request.max_api_attempts, 30),
+                max_known_tokens=min(request.max_known_tokens, 200_000),
             ),
         )
 
@@ -323,6 +327,11 @@ class ContentWorkflowService:
 
         # ---- 阶段 2：文案 ----
         started = time.perf_counter()
+
+        # CopywritingBudget 的字段上限比 ContentWorkflowRequest 更小
+        # （max_known_tokens ≤ 100000，max_api_attempts ≤ 20）。
+        # 共享预算才是真正的约束，这里的阶段上限只是契约占位，
+        # 因此按契约上限取小值，避免 Transparent 透传触发 ValidationError。
         copy_request = CopywritingRequest(
             topic=request.topic,
             target_audience=request.target_audience,
@@ -332,8 +341,8 @@ class ContentWorkflowService:
             purpose=request.purpose,
             evidence_package=research,
             budget=CopywritingBudget(
-                max_api_attempts=request.max_api_attempts,
-                max_known_tokens=request.max_known_tokens,
+                max_api_attempts=min(request.max_api_attempts, 20),
+                max_known_tokens=min(request.max_known_tokens, 100_000),
             ),
         )
 
@@ -343,7 +352,6 @@ class ContentWorkflowService:
         )
         draft = copy_agent.run(copy_request)
         timings["draft_ms"] = round((time.perf_counter() - started) * 1000, 1)
-
         if draft.status is CopywritingStatus.ABORTED:
             return self._result(
                 task_id, request, research=research, draft=draft,

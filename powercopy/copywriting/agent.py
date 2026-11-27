@@ -207,6 +207,15 @@ class CopywritingAgent:
                 str(exc),
                 usage=self._budget_snapshot(budget),
             )
+        except Exception as exc:  # noqa: BLE001
+            # 真实 LLM 的网络/协议异常（APIConnectionError、超时等）
+            # 必须转成明确失败状态，而不是让整个流程崩溃。
+            return self._failed(
+                draft_id,
+                request,
+                f"模型调用失败（{type(exc).__name__}）：{exc}",
+                usage=self._budget_snapshot(budget),
+            )
 
         # ---- 3. 模型主动声明证据不足 ----
         if raw.get("insufficient_evidence") is True:

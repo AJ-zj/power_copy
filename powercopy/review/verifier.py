@@ -78,12 +78,56 @@ _FACTUAL_MARKERS = re.compile(
 )
 
 # 句子切分
-_SENTENCE_SPLIT = re.compile(r"[。！？\n]+")
+_SENTENCE_SPLIT = re.compile(r"[。！？]+")
+
+# 小标题模式：一、二、（一）1. 等序号开头，或固定的结构词
+_HEADING_PATTERN = re.compile(
+    r"^\s*(?:[一二三四五六七八九十]+[、.]|（[一二三四五六七八九十]+）|"
+    r"\([一二三四五六七八九十]+\)|\d+[、.．])\s*"
+)
+_STRUCTURE_WORDS = {
+    "结语", "前言", "引言", "总结", "小结", "序言", "概述", "背景",
+}
+
+
+def _is_heading(line: str) -> bool:
+    """判断**整行**是否为小标题而非事实性陈述。
+
+    真实 LLM 生成的文案常带「一、谁可以成为经营主体」「结语」这类
+    结构标题。它们不含谓述内容，不应被当作事实性陈述送去做语义核查
+    —— 否则会把格式标题误判为「证据不足」。
+
+    注意：判断对象是**换行分隔的行**，不是句号切分后的句子。
+    句号切分后的片段本身就不带标点，不能用「是否有句号」来判断。
+    """
+
+    text = line.strip()
+    if not text:
+        return True
+    if text in _STRUCTURE_WORDS:
+        return True
+    # 以序号开头且整行没有句号/逗号等谓述标点，且较短
+    if _HEADING_PATTERN.match(text):
+        if len(text) <= 40 and "。" not in text and "，" not in text:
+            return True
+    return False
 
 
 def _split_sentences(text: str) -> list[str]:
-    parts = [s.strip() for s in _SENTENCE_SPLIT.split(text)]
-    return [s for s in parts if len(s) >= 8]
+    """按行过滤标题，再按句号切分成句子。"""
+
+    sentences: list[str] = []
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or _is_heading(line):
+            continue
+        for part in _SENTENCE_SPLIT.split(line):
+            cleaned = part.strip()
+            if len(cleaned) >= 8:
+                sentences.append(cleaned)
+
+    return sentences
 
 
 class ContentVerifier:
