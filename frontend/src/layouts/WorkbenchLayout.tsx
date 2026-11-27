@@ -10,6 +10,7 @@ import type { RuntimeInfo } from '../types/workbench'
 const primary = [
   { path: '/overview', label: '项目总览', icon: LayoutDashboard },
   { path: '/rag', label: 'RAG Studio', icon: Layers3 },
+  { path: '/content', label: 'Content Studio', icon: PenLine },
   { path: '/playground', label: 'Agent Playground', icon: FlaskConical },
   { path: '/observability', label: '可观测中心', icon: Activity },
   { path: '/tools', label: 'Tool Registry', icon: Wrench },
@@ -28,7 +29,6 @@ const roadmap = [
   { path: '/roadmap/memory', label: 'Memory Center', icon: Database },
   { path: '/roadmap/context', label: 'Context Engineering', icon: Network },
   { path: '/roadmap/skills', label: 'Skills Library', icon: Blocks },
-  { path: '/roadmap/content', label: 'Content Studio', icon: PenLine },
   { path: '/roadmap/evaluation', label: 'Evaluation Center', icon: ScanLine },
 ]
 
@@ -38,15 +38,20 @@ const groups = [
   { title: '后续研发', links: roadmap },
 ]
 
+function currentPath(route: string) {
+  if (route === '/roadmap/rag') return '/rag'
+  if (route === '/roadmap/content') return '/content'
+  return route
+}
+
 export function routeLabel(route: string) {
-  if (route === '/roadmap/rag') return routeLabel('/rag')
-  return groups.flatMap(group => group.links).find(link => link.path === route)?.label
+  return groups.flatMap(group => group.links).find(link => link.path === currentPath(route))?.label
 }
 
 export function WorkbenchLayout({ route, children }: { route: string; children: ReactNode }) {
   const [showNav, setShowNav] = useState(false)
   const backend = useApi<RuntimeInfo>('/runtime')
-  const currentRoute = route === '/roadmap/rag' ? '/rag' : route
+  const currentRoute = currentPath(route)
   const label = routeLabel(currentRoute) ?? '页面'
   const liveStatus = backend.loading ? '正在连接' : backend.error ? '后端离线' : '本地服务在线'
   const dataRoute = currentRoute.startsWith('/data/')
