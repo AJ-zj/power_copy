@@ -65,3 +65,8 @@ _local_only*
 
 # 真实单价配置（由运维从服务商官网核实后本地填写，不入公开仓库）
 config/pricing.json
+
+# 真实采集审批记录（含操作员确认信息与核实来源，不入公开仓库）
+# 模板见 config/ingestion_approval.example.json
+config/ingestion_approval.json
+storage/ingest/

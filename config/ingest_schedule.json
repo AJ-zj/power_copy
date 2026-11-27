@@ -1,0 +1,37 @@
+{
+  "max_requests_per_run": 8,
+  "interval_seconds": 2.0,
+  "pause_after_failures": 3,
+  "targets": [
+    {
+      "target": "ndrc/policy_index",
+      "frequency": "daily",
+      "enabled": true,
+      "note": "发改委政策列表，发现新发布"
+    },
+    {
+      "target": "ndrc/market_rules",
+      "frequency": "weekly",
+      "enabled": true,
+      "note": "电力市场运行基本规则正文"
+    },
+    {
+      "target": "nea/registration_rules",
+      "frequency": "weekly",
+      "enabled": true,
+      "note": "电力市场注册基本规则正文"
+    },
+    {
+      "target": "nea_east/policy_index",
+      "frequency": "daily",
+      "enabled": true,
+      "note": "华东监管局规范性文件列表"
+    },
+    {
+      "target": "nea_east/anhui_market_news",
+      "frequency": "weekly",
+      "enabled": true,
+      "note": "安徽市场动态（仅归档，不入政策库）"
+    }
+  ]
+}
