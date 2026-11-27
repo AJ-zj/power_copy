@@ -1292,3 +1292,133 @@ class TestAuditScriptVerification:
                     offenders.append(f"{rel}:{node.lineno} {name}")
 
         assert not offenders, f"存在手动预算操作：{offenders}"
+
+
+# ==========================================================================
+# 12. 首篇真实文案实验中发现的缺陷
+# ==========================================================================
+class TestFactCheckCorpusIncludesTitle:
+    """真实实验暴露的误判：文案引用了政策标题里的日期，
+    但审核只把 exact_quote 给模型，导致模型判断「证据没有该日期」。
+    标题实际在切片的 title 字段中。
+    """
+
+    def test_corpus_includes_title(self):
+        item = EvidenceItem(
+            evidence_id="a" * 16,
+            policy_id="p1",
+            document_id="d1",
+            version=1,
+            chunk_id="c1",
+            source_url="https://example.invalid/a",
+            title="某规则(2024年4月18日通过 2024年7月1日起施行)",
+            exact_quote="第一条 规则正文内容，不含日期。",
+            start=0,
+            end=len("第一条 规则正文内容，不含日期。"),
+            page=None,
+            content_sha256="0" * 64,
+            status=EvidenceStatus.VERIFIED,
+        )
+        claim = Claim(
+            claim_id="c1",
+            question_id="q1",
+            statement="x",
+            evidence_ids=["a" * 16],
+            status=ClaimStatus.PENDING_REVIEW,
+        )
+        package = _package(claims=[claim], evidence=[item])
+
+        verifier = ContentVerifier(package, _draft())
+        corpus = verifier._evidence_corpus()
+
+        assert "2024年4月18日" in corpus, "title 中的日期必须进入核查语料"
+        assert "2024年7月1日" in corpus
+        assert "【政策标题】" in corpus
+        assert "【原文片段】" in corpus
+
+    def test_literal_backtracking_uses_title(self):
+        """字面回溯也必须能看到 title 中的内容。"""
+
+        item = EvidenceItem(
+            evidence_id="a" * 16,
+            policy_id="p1",
+            document_id="d1",
+            version=1,
+            chunk_id="c1",
+            source_url="https://example.invalid/a",
+            title="某规则(2024年7月1日起施行)",
+            exact_quote="第一条 规则正文内容。",
+            start=0,
+            end=len("第一条 规则正文内容。"),
+            page=None,
+            content_sha256="0" * 64,
+            status=EvidenceStatus.VERIFIED,
+        )
+        claim = Claim(
+            claim_id="c1",
+            question_id="q1",
+            statement="x",
+            evidence_ids=["a" * 16],
+            status=ClaimStatus.PENDING_REVIEW,
+        )
+        package = _package(claims=[claim], evidence=[item])
+
+        draft = _draft(body="该规则自2024年7月1日起施行。")
+        verifier = ContentVerifier(package, draft)
+        verifier.check_fact_support()
+
+        # 日期在 title 中，不应被判为无依据
+        assert not any(
+            i.code == "UNSUPPORTED_LITERAL_ANCHOR" for i in verifier._issues
+        )
+
+
+class TestRevisionJsonExtraction:
+    """真实实验暴露的缺陷：修订模型可能返回带前后缀的 JSON，
+    直接 json.loads 会失败且静默返回 None，无法诊断。
+    """
+
+    def test_plain_json(self):
+        from powercopy.review.agent import _extract_json_object
+
+        assert _extract_json_object('{"title":"a","body":"b"}') == {
+            "title": "a",
+            "body": "b",
+        }
+
+    def test_json_with_prefix(self):
+        from powercopy.review.agent import _extract_json_object
+
+        result = _extract_json_object('好的，结果如下：{"title":"a","body":"b"}')
+        assert result == {"title": "a", "body": "b"}
+
+    def test_json_with_suffix(self):
+        from powercopy.review.agent import _extract_json_object
+
+        result = _extract_json_object('{"title":"a","body":"b"}\n\n以上。')
+        assert result == {"title": "a", "body": "b"}
+
+    def test_invalid_returns_none(self):
+        from powercopy.review.agent import _extract_json_object
+
+        assert _extract_json_object("不是 JSON") is None
+
+    def test_revision_failure_records_reason(self):
+        """修订失败必须记录具体原因，不能静默。"""
+
+        class BadLLM:
+            def invoke(self, messages, model=None, **kwargs):
+                return {"content": "完全不是 JSON"}
+
+        item, claim = _evidence_and_claim()
+        package = _package(claims=[claim], evidence=[item])
+        draft = _draft(body="政策原文明确：可节省30%电费。")
+
+        agent = ReviewAgent(
+            package, reviser_llm=BadLLM(), max_revisions=1
+        )
+        report, final, revision = agent.run(draft)
+
+        if revision.status == "failed":
+            assert "模型未能给出可用的订正结果" in revision.status_reason
+            assert "原因未知" not in revision.status_reason

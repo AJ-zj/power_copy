@@ -49,6 +49,44 @@ from powercopy.review.contracts import (
 )
 from powercopy.review.verifier import ContentVerifier
 
+def _extract_json_object(text: str) -> dict | None:
+    """从模型输出中提取 JSON 对象。
+
+    真实实验中发现的缺陷：模型可能返回「好的，以下是订正结果：{...}」
+    这类带前后缀的内容，直接 json.loads 会失败。
+    这里先尝试整体解析，失败则扫描第一个平衡的 {...}。
+    """
+
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        pass
+
+    # 扫描第一个平衡的 JSON 对象
+    start = text.find("{")
+    while start >= 0:
+        depth = 0
+        for index in range(start, len(text)):
+            ch = text[index]
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    candidate = text[start : index + 1]
+                    try:
+                        parsed = json.loads(candidate)
+                        if isinstance(parsed, dict):
+                            return parsed
+                    except Exception:
+                        break
+        start = text.find("{", start + 1)
+
+    return None
+
+
 REVISION_SYSTEM_PROMPT = """你是政策文案订正助手。
 
 【任务】
@@ -119,6 +157,7 @@ class ReviewAgent:
         self.model_name = model_name
         self.review_mode = review_mode
         self.budget = budget
+        self._last_revision_error = ""
 
     # ---- 审核 ----
 
@@ -188,7 +227,10 @@ class ReviewAgent:
             revised = self._revise(current_draft, fixed_reports[-1], attempt)
             if revised is None:
                 revision.status = "failed"
-                revision.status_reason = "模型未能给出可用的订正结果"
+                revision.status_reason = (
+                    "模型未能给出可用的订正结果："
+                    + (self._last_revision_error or "原因未知")
+                )
                 revision.attempt = attempt - 1
                 revision.remaining_issue_ids = [
                     i.issue_id for i in fixed_reports[-1].issues
@@ -304,7 +346,13 @@ class ReviewAgent:
     def _revise(
         self, draft: ContentDraft, report: ReviewReport, attempt: int
     ) -> tuple[ContentDraft, list[str], str] | None:
-        """调用模型做一次针对性修订。"""
+        """调用模型做一次针对性修订。
+
+        失败时返回 None，并通过 `self._last_revision_error` 记录原因
+        （真实实验中发现的缺陷：原先静默返回 None，无法诊断）。
+        """
+
+        self._last_revision_error = ""
 
         issues_text = "\n".join(
             f"- [{i.issue_id}] ({i.dimension}/{i.severity}) {i.message}"
@@ -330,11 +378,15 @@ class ReviewAgent:
             )
         except BudgetExceeded:
             raise
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
+            self._last_revision_error = (
+                f"模型调用异常（{type(exc).__name__}）：{exc}"
+            )
             return None
 
         raw = response.get("content") if isinstance(response, dict) else None
         if not raw:
+            self._last_revision_error = "模型返回空内容"
             return None
 
         text = str(raw).strip()
@@ -346,14 +398,21 @@ class ReviewAgent:
                     text = text[4:]
                 text = text.strip()
 
-        try:
-            parsed = json.loads(text)
-        except Exception:
+        parsed = _extract_json_object(text)
+        if parsed is None:
+            preview = text[:200].replace("\n", " ")
+            self._last_revision_error = (
+                f"模型结构化输出无法解析为 JSON 对象；"
+                f"原始响应前 200 字符：{preview!r}"
+            )
             return None
 
         new_title = str(parsed.get("title") or "").strip()
         new_body = str(parsed.get("body") or "").strip()
         if not new_title or not new_body:
+            self._last_revision_error = (
+                "模型返回的 JSON 缺少 title 或 body 字段"
+            )
             return None
 
         addressed = [

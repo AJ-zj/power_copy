@@ -310,6 +310,24 @@ class ContentVerifier:
 
     # ---- 维度二：事实支持性 ----
 
+    def _evidence_corpus(self) -> str:
+        """构造用于事实核查的证据文本。
+
+        **必须同时包含 title 与 exact_quote**。
+        真实实验中发现的缺陷：文案引用了政策标题里的日期
+        （如「2024年4月18日经第11次委务会通过」），但标题在
+        切片的 `title` 字段中，不在 `exact_quote` 里。只给模型看
+        exact_quote 会导致模型判断「证据中没有该日期」，
+        而实际上标题里明明有 —— 这是误判。
+        """
+
+        parts = []
+        for item in self.package.evidence_items:
+            if item.title:
+                parts.append(f"【政策标题】{item.title}")
+            parts.append(f"【原文片段】{item.exact_quote}")
+        return "\n".join(parts)
+
     def check_fact_support(self) -> DimensionResult:
         """检查标题与完整正文中的事实性陈述。
 
@@ -323,7 +341,7 @@ class ContentVerifier:
         """
 
         before = len(self._issues)
-        corpus = "\n".join(e.exact_quote for e in self.package.evidence_items)
+        corpus = self._evidence_corpus()
 
         sentences = _split_sentences(f"{self.draft.title}\n{self.draft.body}")
         factual = [
