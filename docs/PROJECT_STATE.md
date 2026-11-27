@@ -1,8 +1,8 @@
 # PROJECT_STATE
 
-**最后更新**：2026-11-26（05.5-A 混合检索完成后）
-**当前阶段**：阶段04 完成，阶段05 进行中（05.1 切片 + Embedding + 05-A 词法 + 05-B 向量 + 05.5-A 混合检索）
-**代码基线**：1122 项测试通过
+**最后更新**：2026-11-27（MVP-01-F 前端集成验收）
+**当前阶段**：MVP-01 后端与 RAG Studio 已完成离线联调，待 ChatGPT 最终验收
+**代码基线**：1211 项测试通过
 
 ---
 
@@ -25,11 +25,15 @@
 | 05.1-B | 本地 Embedding 能力 | ✅ 已验收 | 28 |
 | 05-A | BM25 词法检索基线 | ✅ 已验收 | 81 |
 | 05-B | Dense 向量检索 | ✅ 已验收 | 46 |
-| 05.5-A | Hybrid 混合检索（RRF） | ✅ **本次完成** | 63 |
+| 05.5-A | Hybrid 混合检索（RRF） | ✅ 已验收 | 68 |
+| MVP-01 | 检索集成（接入 Agent） | ✅ 已完成 | 55 |
+| MVP-01-F | RAG Studio 前端与接口、检索安全审查 | ✅ 已联调，待最终验收 | +22 |
 
-**测试总数**：1122 passed
+**测试总数**：1211 passed
 
 ---
+
+MVP-01-F 验收覆盖三路真实检索、候选原文、开发评测、无命中、缺索引和 Agent 工具链路。 [API 契约与验收记录](contracts/mvp01-retrieval-api.md)
 
 ## 二、05.1-B 交付摘要（Embedding）
 
@@ -112,6 +116,59 @@ frontend/src/pages/Runtime.tsx           状态展示与配色
 tests/test_tool_result_semantics.py      新增 41 项
 scripts/check_tool_result_semantics.py   新增 11 项验收
 ```
+
+---
+
+## 二-B、MVP-01 交付摘要（检索集成）
+
+### 解决的问题
+
+05.5-A 交付了混合检索，但存在三个阻碍接入 Agent 的问题，已全部修复：
+
+| 问题 | 修复 |
+|---|---|
+| 指纹缺失被判为「一致」 | 四状态判定，缺指纹不再视为一致 |
+| 版本冲突可用 allow_degrade 绕过 | 版本冲突硬拒绝，**即使 allow_degrade=True** |
+| NPZ 需 allow_pickle=True | chunk_ids 改定长 Unicode，`allow_pickle=False` |
+
+### 关键改动
+
+- `CacheNamespace` 绑定 model / commit / tokenizer_fingerprint / dim / pooling /
+  normalized / encode_mode 七项；缺 commit 或 tokenizer 指纹则拒绝加载缓存
+- 索引记录 model_commit + tokenizer_fingerprint，**加载与每次 search() 都校验**
+- 模型加载默认 `local_files_only=True`，缺模型报错不联网
+- 索引/数据库路径只来自程序配置，工具参数 `extra="forbid"`
+
+### 新增工具
+
+```text
+search_policy_evidence
+  query（1-200 字符）+ top_k（1-20）
+  输出含 policy_id / document_id / version / 字符偏移 / content_sha256 / source_url
+  candidates_are_not_facts: true  ← 明确「候选 ≠ 事实」
+  索引与政策库版本比对，不新鲜时标注 INDEX_MAY_BE_STALE
+```
+
+### 运行时
+
+`RunRequest.use_retrieval`（默认 **False**，保持原有 search_policy 流程不变）。
+Mock LLM 端到端验证通过：任务 → Agent Loop → 检索工具 → ToolResult → 输出。
+
+### 重要：需重建索引
+
+```text
+旧索引 policy-dense-index-v1    → 必须重建（object 数组不再支持）
+旧缓存 policy-embedding-cache-v1 → 已失效（命名空间字段变化）
+
+python scripts/build_dense_index.py --rebuild
+python scripts/eval_retrieval.py --rebuild
+```
+
+### 未解决
+
+- **证据充分性判断仍缺失**（候选 ≠ 有证据），分配至 MVP-02
+- RRF 不保证每个查询都优于单路（分类型指标持平）
+- RAG Studio TypeScript、生产构建及浏览器验收已通过。详见 [MVP-01-F 契约与验收](contracts/mvp01-retrieval-api.md)
 
 ---
 
@@ -287,19 +344,18 @@ nDCG@10    : 0.4231
 
 | 项 | 状态 | 方式 |
 |---|---|---|
-| 全量回归 | ✅ 1122 passed | `python -m pytest tests -q` |
+| 全量回归 | ✅ 1211 passed | `python -m pytest tests -q` |
 | 04.9 验收 | ✅ 11/11 | `python scripts/check_tool_result_semantics.py` |
 | 05.1 验收 | ✅ 10/10 | `python scripts/check_chunking.py` |
 | 源码未越界改动 | ✅ | 19 个核心模块哈希记录 |
 | 数据库结构未变 | ✅ | 4 张表结构一致 |
-| 新增依赖 | ✅ 0 | requirements.txt 未改 |
+| 运行依赖 | 显式声明已有 NumPy | 前端锁定依赖保持原版本 |
 
 ### 未验证
 
 - ❌ 模型 `response_format` / `strict` / `/v1/responses` / `stream` 支持
 - ❌ 真实政策 PDF 解析质量（无授权样本）
-- ❌ 前端 TypeScript 类型检查（环境无 node/pnpm）
 
 ---
 
-**下一步**：等待项目负责人验收 04.9，确认后进入阶段05 下一项任务。
+**下一步**：等待 ChatGPT 最终验收 MVP-01。

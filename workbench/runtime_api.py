@@ -20,6 +20,8 @@ from powercopy.core.trace import get_current_trace, record_trace_event
 from powercopy.tools.builtin.policy_tools import build_live_registry
 from powercopy.tools.executor import ToolExecutor
 
+from workbench.retrieval_api import resolve_workbench_rag_dir
+
 
 SYSTEM_PROMPT = (
     "你是 PowerCopy V2 的在库政策研究助手。使用已注册的政策工具核对事实，"
@@ -48,6 +50,13 @@ class RunRequest(BaseModel):
     mode: Literal["local", "live"] = "local"
     keyword: str = Field(default="", max_length=200)
     region: str = Field(default="", max_length=80)
+    use_retrieval: bool = Field(
+        default=False,
+        description=(
+            "是否让本地 Mock LLM 走混合检索工具（search_policy_evidence）。"
+            "默认 False，保持原有 search_policy → get_policy_detail 流程不变。"
+        ),
+    )
     max_rounds: int = Field(default=DEFAULT_BUDGET["max_rounds"], ge=1, le=12)
     max_tool_calls: int = Field(default=DEFAULT_BUDGET["max_tool_calls"], ge=1, le=24)
     max_api_attempts: int = Field(default=DEFAULT_BUDGET["max_api_attempts"], ge=1, le=24)
@@ -65,6 +74,8 @@ class LocalPolicyLLM(LLMClient):
         self.retry_policy = RetryPolicy(max_attempts=1)
         self.keyword = request.keyword or request.task[:200].strip()
         self.region = request.region
+        # 是否走混合检索工具；默认走原有 search_policy 流程
+        self.use_retrieval = request.use_retrieval
         self.read_detail = (
             min(request.max_rounds, request.max_api_attempts) >= 3 and request.max_tool_calls >= 2
         )
@@ -79,9 +90,16 @@ class LocalPolicyLLM(LLMClient):
             json.loads(message["content"]) for message in messages if message["role"] == "tool"
         ]
         if not observations:
+            if self.use_retrieval:
+                return self.tool_response("search_policy_evidence", {
+                    "query": self.keyword, "top_k": 5,
+                })
             return self.tool_response("search_policy", {
                 "keyword": self.keyword, "region": self.region, "limit": 5,
             })
+
+        if self.use_retrieval:
+            return self._respond_retrieval(observations)
 
         search = observations[0]
         search_data = search.get("data") or {}
@@ -118,6 +136,54 @@ class LocalPolicyLLM(LLMClient):
                 content += "该版本正文片段和官方来源见证据区。"
             else:
                 content += "本次未能读取该版本正文，可在工具调用中查看原因。"
+        return self.response(content)
+
+    def _respond_retrieval(self, observations: list) -> object:
+        """检索工具链路的 Mock 应答。
+
+        只读三条状态：execution_status / business_status / business_code。
+        不把候选当事实，输出里明确提示需要核对原文。
+        """
+
+        result = observations[0]
+
+        if result.get("execution_status") != "ok":
+            return self.response(
+                f"本地检索工具执行失败。{result.get('error_message') or '请核对工具结果。'}"
+            )
+
+        status = result.get("business_status")
+        data = result.get("data") or {}
+
+        if status == "failed":
+            return self.response(
+                f"本地检索不可用。{result.get('error_message') or '请核对工具结果。'}"
+            )
+
+        candidates = data.get("evidence_candidates") or []
+        mode = data.get("retrieval_mode") or "unknown"
+        degraded = data.get("degraded_status")
+        freshness = data.get("index_freshness")
+
+        if not candidates:
+            return self.response(
+                f"本地混合检索（{mode}）未返回候选片段。"
+                f"这不等于政策不存在，可换关键词或改用 search_policy 粗查。"
+            )
+
+        first = candidates[0]
+        content = (
+            f"本地混合检索（{mode}）返回 {len(candidates)} 个候选片段。"
+            f"首条来自 policy_id={first['policy_id']} 的 v{first['version']}，"
+            f"字符区间 [{first['start']}, {first['end']})。"
+            f"这些是检索候选而非已核实事实，需核对原文后引用。"
+        )
+
+        if degraded:
+            content += f"本次为降级模式（{degraded}），不是完整混合检索。"
+        if freshness and freshness != "ok":
+            content += f"索引状态为 {freshness}，结果可能不是最新政策。"
+
         return self.response(content)
 
     def tool_response(self, name: str, arguments: dict):
@@ -276,7 +342,7 @@ def execute_run(request: RunRequest, project_root: Path) -> dict:
     else:
         client = LocalPolicyLLM(request)
 
-    registry = build_live_registry(database_path(project_root))
+    registry = build_live_registry(database_path(project_root), rag_dir=resolve_workbench_rag_dir(project_root))
     observed_llm = ObservedLLM(client)
     executor = ObservedToolExecutor(registry)
     agent = Agent(observed_llm, registry, SYSTEM_PROMPT, **limits)
@@ -339,10 +405,17 @@ def build_runtime_router(project_root: Path) -> APIRouter:
 
     @router.get("/tools")
     def tools():
-        registry = build_live_registry(database_path(project_root))
+        registry = build_live_registry(database_path(project_root), rag_dir=resolve_workbench_rag_dir(project_root))
         limits = {
             "search_policy": ["本地 SQLite 只读", "字面关键词匹配", "每次最多 10 条"],
             "get_policy_detail": ["本地 SQLite 只读", "每段最多 8,000 字符", "支持指定已观测版本"],
+            "search_policy_evidence": [
+                "本地混合检索（词法 + 向量 + RRF）",
+                "返回检索候选，非已核实事实",
+                "query 最长 200 字符，top_k 最多 20",
+                "单条候选正文最多 800 字符",
+                "索引过期时会标注，不代表最新政策",
+            ],
         }
         items = []
         for name in registry.list_tools():

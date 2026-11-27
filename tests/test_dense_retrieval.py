@@ -22,6 +22,7 @@ import pytest
 from powercopy.rag.dense import (
     CACHE_SCHEMA,
     SCHEMA_VERSION,
+    CacheNamespace,
     DenseSearch,
     DenseSearchError,
     EmbeddingCache,
@@ -335,30 +336,48 @@ class TestDenseSearch:
 # ==========================================================================
 # 5. 缓存
 # ==========================================================================
+def _full_namespace(**overrides):
+    """构造一个字段完整的命名空间（commit / tokenizer 指纹都不为空）。"""
+    base = {
+        "model": "BAAI/bge-small-zh-v1.5",
+        "commit": "7999e1d3359715c523056ef9478215996d62a620",
+        "tokenizer_fingerprint": "a" * 64,
+        "dim": 512,
+        "pooling": "cls_l2",
+        "normalized": True,
+        "encode_mode": "document",
+        "max_tokens": 512,
+    }
+    base.update(overrides)
+    return CacheNamespace(**base)
+
+
 class TestEmbeddingCache:
     def test_put_get(self, tmp_path):
-        cache = EmbeddingCache(tmp_path / "c.json")
+        cache = EmbeddingCache(tmp_path / "c.json", namespace=_full_namespace())
         vector = [0.1] * 512
         cache.put("电力市场", vector)
         assert cache.get("电力市场") == vector
 
     def test_miss_returns_none(self, tmp_path):
-        cache = EmbeddingCache(tmp_path / "c.json")
+        cache = EmbeddingCache(tmp_path / "c.json", namespace=_full_namespace())
         assert cache.get("不存在") is None
 
     def test_persist_and_reload(self, tmp_path):
         path = tmp_path / "c.json"
-        cache = EmbeddingCache(path)
+        ns = _full_namespace()
+        cache = EmbeddingCache(path, namespace=ns)
         cache.put("电力市场", [0.5] * 512)
         cache.save()
 
-        reloaded = EmbeddingCache(path)
+        reloaded = EmbeddingCache(path, namespace=ns)
         assert reloaded.get("电力市场") == [0.5] * 512
+        assert reloaded.rejected_reason is None
 
     def test_cache_uses_hash_not_plaintext(self, tmp_path):
         """缓存 key 是 sha256，不是原文。"""
         path = tmp_path / "c.json"
-        cache = EmbeddingCache(path)
+        cache = EmbeddingCache(path, namespace=_full_namespace())
         cache.put("电力市场", [0.5] * 512)
         cache.save()
 
@@ -368,16 +387,93 @@ class TestEmbeddingCache:
     def test_wrong_schema_ignored(self, tmp_path):
         path = tmp_path / "c.json"
         path.write_text(json.dumps({"schema": "other", "vectors": {"a": [1]}}))
-        cache = EmbeddingCache(path)
+        cache = EmbeddingCache(path, namespace=_full_namespace())
         assert len(cache) == 0
+        assert cache.rejected_reason == "schema_mismatch"
 
-    def test_wrong_dim_ignored(self, tmp_path):
+    # ---- 新增：命名空间隔离 ----
+
+    def test_incomplete_namespace_rejects_cache(self, tmp_path):
+        """命名空间缺少 commit / tokenizer 指纹时，拒绝复用任何旧向量。"""
         path = tmp_path / "c.json"
-        path.write_text(
-            json.dumps({"schema": CACHE_SCHEMA, "dim": 256, "vectors": {}})
+        good = _full_namespace()
+        cache = EmbeddingCache(path, namespace=good)
+        cache.put("电力市场", [0.5] * 512)
+        cache.save()
+
+        # 默认命名空间（无 embedder）缺 commit 与 tokenizer
+        naive = EmbeddingCache(path)
+        assert len(naive) == 0
+        assert naive.rejected_reason is not None
+        assert "namespace_incomplete" in naive.rejected_reason
+
+    def test_commit_mismatch_invalidates(self, tmp_path):
+        path = tmp_path / "c.json"
+        cache = EmbeddingCache(path, namespace=_full_namespace())
+        cache.put("电力市场", [0.5] * 512)
+        cache.save()
+
+        other = _full_namespace(commit="b" * 40)
+        reloaded = EmbeddingCache(path, namespace=other)
+        assert len(reloaded) == 0
+        assert reloaded.rejected_reason == "commit_mismatch"
+
+    def test_tokenizer_mismatch_invalidates(self, tmp_path):
+        path = tmp_path / "c.json"
+        cache = EmbeddingCache(path, namespace=_full_namespace())
+        cache.put("电力市场", [0.5] * 512)
+        cache.save()
+
+        other = _full_namespace(tokenizer_fingerprint="b" * 64)
+        reloaded = EmbeddingCache(path, namespace=other)
+        assert len(reloaded) == 0
+        assert reloaded.rejected_reason == "tokenizer_fingerprint_mismatch"
+
+    def test_pooling_mismatch_invalidates(self, tmp_path):
+        path = tmp_path / "c.json"
+        cache = EmbeddingCache(path, namespace=_full_namespace())
+        cache.put("电力市场", [0.5] * 512)
+        cache.save()
+
+        other = _full_namespace(pooling="mean_l2")
+        reloaded = EmbeddingCache(path, namespace=other)
+        assert len(reloaded) == 0
+        assert reloaded.rejected_reason == "pooling_mismatch"
+
+    def test_normalized_mismatch_invalidates(self, tmp_path):
+        path = tmp_path / "c.json"
+        cache = EmbeddingCache(path, namespace=_full_namespace())
+        cache.put("电力市场", [0.5] * 512)
+        cache.save()
+
+        other = _full_namespace(normalized=False)
+        reloaded = EmbeddingCache(path, namespace=other)
+        assert len(reloaded) == 0
+        assert reloaded.rejected_reason == "normalized_mismatch"
+
+    def test_encode_mode_mismatch_invalidates(self, tmp_path):
+        path = tmp_path / "c.json"
+        cache = EmbeddingCache(path, namespace=_full_namespace())
+        cache.put("电力市场", [0.5] * 512)
+        cache.save()
+
+        other = _full_namespace(encode_mode="query")
+        reloaded = EmbeddingCache(path, namespace=other)
+        assert len(reloaded) == 0
+        assert reloaded.rejected_reason == "encode_mode_mismatch"
+
+    def test_dim_alone_is_not_enough(self, tmp_path):
+        """仅维度相同不足以复用缓存。"""
+        path = tmp_path / "c.json"
+        cache = EmbeddingCache(path, namespace=_full_namespace())
+        cache.put("电力市场", [0.5] * 512)
+        cache.save()
+
+        same_dim_other_model = _full_namespace(
+            model="other/model", commit="c" * 40
         )
-        cache = EmbeddingCache(path)
-        assert len(cache) == 0
+        reloaded = EmbeddingCache(path, namespace=same_dim_other_model)
+        assert len(reloaded) == 0
 
     def test_build_uses_cache(self, tmp_path, embedder):
         """第二次构建应全部命中缓存。"""
