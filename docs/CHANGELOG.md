@@ -4,6 +4,72 @@
 
 ---
 
+## [MVP-01] - 2026-11-26
+
+### 检索集成（V2.1）
+
+**类型**：新功能 + 安全修复
+
+**源码评审问题修复**
+
+1. **Hybrid 索引一致性**
+   - 旧实现过滤空指纹后比较，等于「拿不到指纹就算一致」
+   - 改为四状态：ok / single_path_unconfigured / fingerprint_missing / version_conflict
+   - 版本冲突时**即使 allow_degrade=True 也抛 HybridError**
+   - 降级时要求该路指纹非空且检索成功，否则返回空结果
+
+2. **Dense 模型一致性**
+   - CacheNamespace 绑定 model / commit / tokenizer_fingerprint / dim /
+     pooling / normalized / encode_mode 七项
+   - 命名空间缺 commit 或 tokenizer 指纹 → 拒绝加载缓存
+   - 索引必须记录模型身份，加载与每次 search() 都校验
+   - **不允许仅凭 dim 相同就认定模型兼容**
+   - 新增 chunk_id 唯一性与清单双向完整对应检查
+
+3. **安全与离线**
+   - NPZ chunk_ids 从 dtype=object 改为定长 Unicode，allow_pickle=False
+   - 旧格式索引拒绝加载并给出重建指引，不自动兼容
+   - 模型加载默认 local_files_only=True，缺模型报错不联网
+   - 索引/数据库路径只来自程序配置，工具参数 extra="forbid"
+
+**新增检索工具**
+
+```text
+search_policy_evidence
+- query（1-200 字符）+ top_k（1-20）
+- 输出含 policy_id / document_id / version / 字符偏移 / content_sha256 / 来源 URL
+- candidates_are_not_facts: true 明确「候选 ≠ 事实」
+- 索引与政策库版本比对，不新鲜时 business_code=INDEX_MAY_BE_STALE
+- 单条候选正文上限 800 字符
+```
+
+**运行时集成**
+
+- RunRequest 新增 use_retrieval（默认 False，保持原行为）
+- build_live_registry 新增 with_retrieval / rag_dir
+- PolicyEvidenceService 复用编码器与 HybridRetriever 单例
+- Mock LLM 端到端验证：任务 → Agent Loop → 检索工具 → ToolResult → 输出
+
+**新增文件**
+
+```text
+powercopy/tools/builtin/retrieval.py      检索证据工具
+scripts/build_dense_index.py              离线索引构建
+tests/test_retrieval_integration.py       55 项专项测试
+docs/adr/ADR-009-retrieval-integration.md
+docs/roadmap-v2.1.md
+docs/review/mvp-01-retrieval-integration.md
+```
+
+**测试基线**：1122 → 1189 passed
+
+**未做**：GraphRAG、Reranker、Adaptive Router、证据充分性判断、前端类型检查（本机无 Node）
+
+**重要**：旧索引（policy-dense-index-v1）与旧缓存（policy-embedding-cache-v1）
+必须重建，不自动兼容。
+
+---
+
 ## [05.5-A] - 2026-11-26
 
 ### Hybrid Retrieval（等权 RRF 融合）

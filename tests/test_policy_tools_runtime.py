@@ -491,8 +491,18 @@ class TestPagination:
 # 8. 实际 Tool Registry 注册及 Function Calling Schema
 # --------------------------------------------------------------------------
 class TestRegistryAndSchema:
-    def test_live_registry_has_two_tools(self, live_registry):
+    def test_live_registry_has_three_tools(self, live_registry):
+        """真实 registry 含两个政策查询工具 + 一个混合检索证据工具。"""
         assert sorted(live_registry.list_tools()) == [
+            "get_policy_detail",
+            "search_policy",
+            "search_policy_evidence",
+        ]
+
+    def test_live_registry_can_disable_retrieval(self):
+        """with_retrieval=False 时只保留原有两个工具（向后兼容）。"""
+        registry = build_live_registry(DB, with_retrieval=False)
+        assert sorted(registry.list_tools()) == [
             "get_policy_detail",
             "search_policy",
         ]

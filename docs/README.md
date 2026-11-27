@@ -2,7 +2,7 @@
 
 售电行业政策研究与文案生产的可追溯 Agent 运行时。
 
-**当前状态：1122 项自动化测试全部通过**
+**当前状态：1189 项自动化测试全部通过**
 
 ---
 
@@ -32,7 +32,7 @@
 
 | 指标 | 数值 |
 |---|---|
-| 自动化测试 | 1122 项，全部通过 |
+| 自动化测试 | 1189 项，全部通过 |
 | 已验收阶段 | 阶段04（4.1–4.8、4.9）、阶段05（5.1、5.1-B、5-A、5-B、5.5-A） |
 | 数据层模块 | 17 个（采集/解析/版本/查询/PDF/切片/Embedding/词法/向量/混合） |
 | 工作台页面 | 10 个，全部对接真实数据 |
@@ -56,7 +56,7 @@ PowerCopy-V2/
 ├── frontend/          # 工作台前端（React 19 + Vite）
 ├── config/            # 解析配置
 ├── scripts/           # 采集/验收脚本
-├── tests/             # 1122 项测试
+├── tests/             # 1189 项测试
 └── docs/              # 本文档中心
 ```
 
@@ -102,7 +102,7 @@ pip install -e ".[dev]" -e ".[api]" -r requirements.txt
 
 # 跑测试
 python -m pytest tests -q
-# 期望：1122 passed
+# 期望：1189 passed
 
 # 起服务
 uvicorn workbench.main:app --port 8000
@@ -132,6 +132,8 @@ uvicorn workbench.main:app --port 8000
 - [05-B Dense Retrieval 报告](review/stage05b-dense-retrieval.md) — 向量检索实现、性能与对照实验
 - [05.5-A Hybrid Retrieval 报告](review/stage05.5a-hybrid-retrieval.md) — 等权 RRF 融合、三路对照与 H3 检验
 - [已知安全问题与技术债务](review/security-and-tech-debt.md) — **必读**：历史遗留、证据充分性缺失、语料规模限制
+- [MVP-01 检索集成报告](review/mvp-01-retrieval-integration.md) — 索引一致性收紧、NPZ 安全、检索工具接入
+- [V2.1 交付路线](roadmap-v2.1.md) — MVP-01 ~ MVP-06，技术升级不再作为前置
 - [阶段05 路线图](roadmap-stage05.md) — Adaptive Graph-enhanced RAG 分阶段计划
 
 ### ADR（架构决策记录）
@@ -144,6 +146,7 @@ uvicorn workbench.main:app --port 8000
 - [ADR-006 本地 Embedding](adr/ADR-006-local-embedding.md) — **BGE-small-zh-v1.5，512 维，CPU（已采纳并实施）**
 - [ADR-007 Dense Retrieval](adr/ADR-007-dense-retrieval.md) — **NumPy 精确检索，不引入向量数据库（已采纳并实施）**
 - [ADR-008 Hybrid RRF](adr/ADR-008-hybrid-rrf.md) — **等权 RRF 融合，rank_constant=60（已采纳并实施）**
+- [ADR-009 检索集成](adr/ADR-009-retrieval-integration.md) — **四状态一致性、模型指纹绑定、NPZ 安全、检索工具（已采纳并实施）**
 
 > ADR 的生命周期：**提议** → **已采纳** / **已废弃**。
 > 每条 ADR 都写明「重新评估触发条件」，满足条件时应重新审视该决策。

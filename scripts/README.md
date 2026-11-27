@@ -435,6 +435,19 @@ python scripts/sync_wiki.py
 
 把 `docs/*.md` 转成 GitHub Wiki 格式（链接改写、图片路径映射）。`docs/` 是唯一真相源。
 
+## build_dense_index.py
+
+```powershell
+python scripts/build_dense_index.py --rebuild
+python scripts/build_dense_index.py --rebuild --allow-network
+```
+
+构建向量索引（离线）。默认 `local_files_only=True`，不会联网下载模型；
+缺少模型时明确报错。旧格式索引（`policy-dense-index-v1`，object 数组）
+必须用 `--rebuild` 重建，脚本不兼容旧格式。
+
+构建后自动自检：能否以 `allow_pickle=False` 加载 + 模型一致性校验是否通过。
+
 ## 通用约定
 
 - 验收脚本不写数据库、不改 `.env`。
