@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from 'react'
 import {
   Activity, Archive, ArrowUpRight, AudioLines, Blocks, BookOpen, ChevronRight, Database,
-  FileClock, FlaskConical, GitBranch, Globe2, LayoutDashboard, Layers3, Menu, Network,
+  FileClock, FileText, FlaskConical, GitBranch, Globe2, LayoutDashboard, Layers3, Menu, Network,
   PenLine, Radio, ScanLine, Wrench, X, Zap,
 } from 'lucide-react'
 import { useApi } from '../hooks/useApi'
@@ -9,6 +9,9 @@ import type { RuntimeInfo } from '../types/workbench'
 
 const primary = [
   { path: '/overview', label: '项目总览', icon: LayoutDashboard },
+  { path: '/rag', label: 'RAG Studio', icon: Layers3 },
+  { path: '/content', label: 'Content Studio', icon: PenLine },
+  { path: '/daily-report', label: '每日报告', icon: FileText },
   { path: '/playground', label: 'Agent Playground', icon: FlaskConical },
   { path: '/observability', label: '可观测中心', icon: Activity },
   { path: '/tools', label: 'Tool Registry', icon: Wrench },
@@ -24,11 +27,9 @@ const data = [
 ]
 
 const roadmap = [
-  { path: '/roadmap/rag', label: 'RAG Studio', icon: Layers3 },
   { path: '/roadmap/memory', label: 'Memory Center', icon: Database },
   { path: '/roadmap/context', label: 'Context Engineering', icon: Network },
   { path: '/roadmap/skills', label: 'Skills Library', icon: Blocks },
-  { path: '/roadmap/content', label: 'Content Studio', icon: PenLine },
   { path: '/roadmap/evaluation', label: 'Evaluation Center', icon: ScanLine },
 ]
 
@@ -38,17 +39,24 @@ const groups = [
   { title: '后续研发', links: roadmap },
 ]
 
+function currentPath(route: string) {
+  if (route === '/roadmap/rag') return '/rag'
+  if (route === '/roadmap/content') return '/content'
+  return route
+}
+
 export function routeLabel(route: string) {
-  return groups.flatMap(group => group.links).find(link => link.path === route)?.label
+  return groups.flatMap(group => group.links).find(link => link.path === currentPath(route))?.label
 }
 
 export function WorkbenchLayout({ route, children }: { route: string; children: ReactNode }) {
   const [showNav, setShowNav] = useState(false)
   const backend = useApi<RuntimeInfo>('/runtime')
-  const label = routeLabel(route) ?? '页面'
+  const currentRoute = currentPath(route)
+  const label = routeLabel(currentRoute) ?? '页面'
   const liveStatus = backend.loading ? '正在连接' : backend.error ? '后端离线' : '本地服务在线'
-  const dataRoute = route.startsWith('/data/')
-  const roadmapRoute = route.startsWith('/roadmap/')
+  const dataRoute = currentRoute.startsWith('/data/')
+  const roadmapRoute = currentRoute.startsWith('/roadmap/')
 
   return <div className="app-shell">
     <a className="skip-link" href="#main-content" onClick={event => {
@@ -64,11 +72,11 @@ export function WorkbenchLayout({ route, children }: { route: string; children: 
         {groups.map(group => <div className="nav-group" key={group.title}>
           <p>{group.title}</p>
           <ul>{group.links.map(({ path, label, icon: Icon }) =>
-            <li key={path}><a href={`#${path}`} aria-current={route === path ? 'page' : undefined}
+            <li key={path}><a href={`#${path}`} aria-current={currentRoute === path ? 'page' : undefined}
               className={path.startsWith('/roadmap/') ? 'nav-future' : undefined}
               onClick={() => setShowNav(false)}>
               <Icon size={16} aria-hidden="true" /><span>{label}</span>
-              {route === path && <span className="nav-active-dot" aria-hidden="true" />}
+              {currentRoute === path && <span className="nav-active-dot" aria-hidden="true" />}
             </a></li>,
           )}</ul>
         </div>)}

@@ -3,6 +3,9 @@ import { createRoot } from 'react-dom/client'
 import { Badge, Empty, PageHeading, Panel } from './components/ui'
 import { routeLabel, WorkbenchLayout } from './layouts/WorkbenchLayout'
 import Overview from './pages/Overview'
+import RagStudio from './pages/RagStudio'
+import ContentStudio from './pages/ContentStudio'
+import DailyReport from './pages/DailyReport'
 import { Observability, Playground, ToolsPage } from './pages/Runtime'
 import DataCenter from './pages/data/DataCenter'
 import type { DataView } from './pages/data/models'
@@ -31,6 +34,9 @@ function App() {
 
   let page
   if (route === '/overview') page = <Overview />
+  else if (route === '/rag' || route === '/roadmap/rag') page = <RagStudio />
+  else if (route === '/content' || route === '/roadmap/content') page = <ContentStudio />
+  else if (route === '/daily-report') page = <DailyReport />
   else if (route === '/playground') page = <Playground result={result} setResult={setResult} />
   else if (route === '/tools') page = <ToolsPage />
   else if (route === '/observability') page = <Observability result={result} />

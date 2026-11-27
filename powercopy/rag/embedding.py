@@ -33,12 +33,16 @@ torch (CPU) + transformers。这是 04.9 之后唯一的重型依赖，
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 from pathlib import Path
+import re
+from threading import Lock
 from typing import Sequence
 
 # 必须在 import torch 前设置，否则 HF 会写到用户目录
-_DEFAULT_CACHE = Path(__file__).resolve().parents[3] / "storage" / "models"
+_DEFAULT_CACHE = Path(__file__).resolve().parents[2] / "storage" / "models"
 os.environ.setdefault("HF_HOME", str(_DEFAULT_CACHE))
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
@@ -73,23 +77,46 @@ class BGEEmbedder:
         cache_dir: str | Path | None = None,
         device: str = "cpu",
         batch_size: int = 16,
+        revision: str | None = None,
+        local_files_only: bool = True,
     ):
+        """构造编码器。
+
+        Args:
+            model_name: HuggingFace 模型名（仅内部固定值，不接受外部任意路径）
+            cache_dir: 模型缓存目录，默认项目内 storage/models
+            device: 推理设备，默认 CPU
+            batch_size: 批大小
+            revision: 模型 revision。None 表示使用缓存中的默认分支
+            local_files_only: **默认 True**，只用本地缓存，绝不访问外网。
+                缺少模型时直接报错并提示如何准备，不自动下载。
+        """
+
         self.model_name = model_name
         self.cache_dir = str(cache_dir) if cache_dir else None
         self.device = device
         self.batch_size = max(1, batch_size)
+        self.revision = revision
+        self.local_files_only = local_files_only
 
         self._tokenizer = None
         self._model = None
+        self._resolved_commit: str = ""
+        self._resolved_path: str = ""
+        self._tokenizer_fingerprint: str = ""
+        self._load_lock = Lock()
 
     # ---- 惰性加载 ----
 
     def _ensure_loaded(self):
-        if self._model is not None:
-            return
+        with self._load_lock:
+            if self._model is None:
+                self._load()
 
+    def _load(self):
         try:
             import torch
+            from huggingface_hub import snapshot_download
             from transformers import AutoModel, AutoTokenizer
         except ImportError as exc:  # pragma: no cover
             raise EmbeddingError(
@@ -98,19 +125,60 @@ class BGEEmbedder:
             ) from exc
 
         try:
-            self._tokenizer = AutoTokenizer.from_pretrained(
-                self.model_name, cache_dir=self.cache_dir
+            snapshot = Path(snapshot_download(
+                self.model_name,
+                revision=self.revision,
+                cache_dir=self.cache_dir,
+                local_files_only=self.local_files_only,
+                allow_patterns=["*.json", "vocab.txt", "*.safetensors"],
+            ))
+            commit = snapshot.name
+            if not re.fullmatch(r"[0-9a-f]{40}", commit):
+                raise EmbeddingError("无法确认本地模型快照的提交版本。")
+
+            # Both components load from the same resolved snapshot, even if the branch
+            # reference or default cache changes while this encoder is in use.
+            tokenizer = AutoTokenizer.from_pretrained(
+                snapshot, local_files_only=True, trust_remote_code=False
             )
             model = AutoModel.from_pretrained(
-                self.model_name, cache_dir=self.cache_dir
+                snapshot, local_files_only=True, trust_remote_code=False, use_safetensors=True
             )
             model.eval()
             model.to(self.device)
-            self._model = model
+            tokenizer_fingerprint = self._fingerprint_tokenizer(tokenizer)
+        except OSError as exc:
+            raise EmbeddingError(
+                "本地模型不可用，请确认所选版本已完整写入模型缓存。"
+            ) from exc
+        except EmbeddingError:
+            raise
         except Exception as exc:
-            raise EmbeddingError(f"模型加载失败：{exc}") from exc
+            raise EmbeddingError("本地模型加载失败，请检查模型缓存和依赖。") from exc
 
         self._torch = torch
+        self._tokenizer = tokenizer
+        self._resolved_commit = commit
+        self._resolved_path = str(snapshot)
+        self._tokenizer_fingerprint = tokenizer_fingerprint
+        self._model = model
+
+    @staticmethod
+    def _fingerprint_tokenizer(tokenizer) -> str:
+        """Bind the actual fast tokenizer, including vocabulary and processing rules."""
+        backend = getattr(tokenizer, "backend_tokenizer", None)
+        if backend is None:
+            raise EmbeddingError("无法确认分词器内容。")
+        content = {
+            "backend": json.loads(backend.to_str()),
+            "special_tokens": tokenizer.special_tokens_map,
+            "padding_side": tokenizer.padding_side,
+            "truncation_side": tokenizer.truncation_side,
+            "model_max_length": tokenizer.model_max_length,
+        }
+        return hashlib.sha256(json.dumps(
+            content, sort_keys=True, ensure_ascii=False, separators=(",", ":")
+        ).encode("utf-8")).hexdigest()
 
     # ---- 编码 ----
 
@@ -251,30 +319,33 @@ class BGEEmbedder:
 
     @property
     def model_fingerprint(self) -> dict:
-        """模型指纹，用于索引一致性检查。
+        """模型指纹，用于索引与缓存的一致性校验。
 
-        包含模型名、commit、维度、最大长度、池化方式。
-        索引若与指纹不符则拒绝使用。
+        绑定实际加载的：
+        - 模型名与 commit hash
+        - tokenizer 指纹（词表、分词规则及配置）
+        - 池化方式、归一化方式
+        - 编码规则（query 加指令 / document 不加）
+        - 向量维度与最大 token 数
+
+        **不允许仅凭维度相同就认定模型兼容** —— 不同 commit 的同一模型
+        即使都是 512 维，向量空间也可能不同。
+
+        若模型尚未加载，commit 与 tokenizer 指纹为空字符串，
+        调用方（如索引构建）应视为「无法确认」而非「一致」。
         """
-
-        commit = ""
-        try:
-            from transformers import AutoConfig  # noqa: PLC0415
-
-            config = AutoConfig.from_pretrained(
-                self.model_name, cache_dir=self.cache_dir
-            )
-            commit = str(getattr(config, "_commit_hash", "") or "")
-        except Exception:  # pragma: no cover - 离线或缓存缺失
-            commit = ""
 
         return {
             "model": self.model_name,
-            "commit": commit,
+            "commit": self._resolved_commit,
+            "tokenizer_fingerprint": self._tokenizer_fingerprint,
             "dim": EMBEDDING_DIM,
             "max_tokens": MAX_TOKENS,
             "pooling": "cls_l2",
             "normalized": True,
+            "query_instruction": QUERY_INSTRUCTION,
+            "encode_mode_query": "query_with_instruction",
+            "encode_mode_document": "document_no_instruction",
         }
 
     def describe(self) -> dict:
@@ -287,6 +358,10 @@ class BGEEmbedder:
             "query_instruction": QUERY_INSTRUCTION,
             "loaded": self.loaded,
             "cache_dir": self.cache_dir or str(_DEFAULT_CACHE),
+            "local_files_only": self.local_files_only,
+            "revision": self.revision,
+            "resolved_commit": self._resolved_commit,
+            "tokenizer_fingerprint": self._tokenizer_fingerprint,
         }
 
 
