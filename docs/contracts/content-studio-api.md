@@ -41,7 +41,7 @@ Successful requests return the serialized `ContentWorkflowResult` plus aliases u
 - `content_draft` and `draft_statistics` contain the editable draft, citations, review notes, policy validity limitations, and provenance.
 - `review_report`, `review_statistics`, `revision_records`, `budget`, `stage_timings_ms`, `requires_human`, and `schema_version` map to the service result.
 
-`pending_review` is a normal non-publishable result. A Live request additionally needs request-level `confirm_live: true` and the server gate. API attempts are a hard shared limit. Known tokens are a soft budget when the provider returns usage.
+`pending_review` is a normal non-publishable result. A Live request additionally needs request-level `confirm_live: true` and the server gate. API attempts are a hard limit within the budget object used by each model request. In the integrated workflow, draft generation still creates a separate budget, so the shared snapshot is incomplete across stages. Known tokens are a soft budget when the provider returns usage.
 
 Errors use the normal workbench envelope `{"error":{"code":"...","message":"..."}}`. The page handles `CONTENT_WORKFLOW_UNAVAILABLE`, `CONTENT_DATA_UNAVAILABLE`, `LIVE_MODEL_DISABLED`, `CONTENT_RUN_FAILED`, request validation and network failure.
 

@@ -23,6 +23,7 @@ if os.environ.get("POWERCOPY_WORKBENCH_ALLOW_LIVE") == "1":
     load_dotenv(PROJECT / ".env", override=False)
 
 from powercopy.api.main import app
+from workbench.content_api import build_content_router
 from workbench.data_api import build_data_router, overview_data
 from workbench.retrieval_api import build_retrieval_router
 from workbench.runtime_api import build_runtime_router
@@ -69,6 +70,7 @@ async def http_error(_request: Request, exc: HTTPException):
 app.include_router(build_data_router(PROJECT), prefix=PREFIX)
 app.include_router(build_runtime_router(PROJECT), prefix=PREFIX)
 app.include_router(build_retrieval_router(PROJECT), prefix=PREFIX)
+app.include_router(build_content_router(PROJECT), prefix=PREFIX)
 
 
 @app.get(PREFIX + "/overview")
