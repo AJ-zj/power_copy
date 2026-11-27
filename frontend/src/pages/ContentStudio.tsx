@@ -10,6 +10,7 @@ import type {
   ContentMode, ContentPlatform, ContentRequest, ContentRun, ContentStatus,
   EvidenceItem, PolicyValidity, ResearchClaim,
 } from '../types/content'
+import type { Policies } from './data/models'
 import './ContentStudio.css'
 
 const platformLabels: Record<ContentPlatform, string> = {
@@ -102,6 +103,9 @@ function ClaimCard({ claim, evidenceById }: { claim: ResearchClaim; evidenceById
 
 export default function ContentStudio() {
   const [mode, setMode] = useState<ContentMode>('mock')
+  const [topic, setTopic] = useState('')
+  const [region, setRegion] = useState('')
+  const [targetChars, setTargetChars] = useState('800')
   const [authorized, setAuthorized] = useState(false)
   const [run, setRun] = useState<ContentRun | null>(null)
   const [pending, setPending] = useState(false)
@@ -111,6 +115,10 @@ export default function ContentStudio() {
   const [editedBody, setEditedBody] = useState<string>()
   const [selectedEvidence, setSelectedEvidence] = useState<string>()
   const status = useApi<ContentStatus>('/content/status')
+  const coverage = useApi<Policies>('/policies?limit=1')
+  const registration = useApi<Policies>('/policies?keyword=电力市场注册基本规则&limit=1')
+  const hasRegistrationRule = registration.data?.items.some(policy => policy.title.includes('电力市场注册基本规则'))
+  const regionMissing = Boolean(region && coverage.data && !coverage.data.regions.includes(region))
 
   const draft = run?.content_draft
   const editableDraft = draft?.status === 'pending_review' ? draft : null
@@ -161,6 +169,14 @@ export default function ContentStudio() {
     }
   }
 
+  function fillExample() {
+    setTopic('电力市场注册基本规则：企业参与电力交易前如何注册')
+    setRegion('')
+    setTargetChars('300')
+    setMode('mock')
+    setAuthorized(false)
+  }
+
   async function copyDraft() {
     if (!editableDraft) return
     try {
@@ -185,6 +201,8 @@ export default function ContentStudio() {
   const evidenceItems = research?.evidence_items ?? []
   const researchStatistics = run?.research_statistics
   const draftStatistics = run?.draft_statistics
+  const verifiedQuotes = evidenceItems.filter(item => item.status === 'verified').length
+  const aborted = run?.status === 'aborted'
 
   return <>
     <PageHeading eyebrow="CONTENT WORKFLOW" title="Content Studio"
@@ -192,7 +210,7 @@ export default function ContentStudio() {
     <div className="content-workspace">
       <Panel className="content-brief">
         <header className="content-panel-head"><span className="panel-icon"><Sparkles size={17} aria-hidden="true" /></span>
-          <div><h2 id="content-brief-heading">创作需求</h2><p>所有输入由服务端重新校验。</p></div></header>
+          <h2 id="content-brief-heading">创作需求</h2></header>
         {status.loading && <Loading />}
         {status.error && <ErrorState message={`创作服务不可用。 ${status.error}`} retry={status.reload} />}
         {status.data && <div className="content-service-state">
@@ -203,12 +221,21 @@ export default function ContentStudio() {
         {status.data && !status.data.mock_available && <p className="content-mode-note">
           {status.data.workflow_available ? '政策库或索引未就绪。' : '统一内容工作流尚未接入当前后端。'}
         </p>}
+        {coverage.data && <div className="content-open-questions">
+          <p>本地政策库有 {coverage.data.total} 份政策。<a href="#/data/policies">查看可用政策</a></p>
+          {hasRegistrationRule && <div className="content-actions">
+            <button type="button" className="button button-quiet" onClick={fillExample} disabled={pending}>
+              填入 Mock 试用选题
+            </button>
+          </div>}
+        </div>}
         {<form className="content-brief-form" onSubmit={submit}
           aria-labelledby="content-brief-heading">
           <div className="content-field">
             <label htmlFor="content-topic">文案主题 <span aria-hidden="true">*</span></label>
             <textarea id="content-topic" name="topic" rows={3} className="field" maxLength={200} required
-              placeholder="描述需要研究的电力政策问题" />
+              value={topic} onChange={event => setTopic(event.target.value)}
+              placeholder="例如「电力市场注册」的申请流程" />
           </div>
           <div className="content-field">
             <label htmlFor="content-audience">目标客户</label>
@@ -216,10 +243,15 @@ export default function ContentStudio() {
           </div>
           <div className="content-field">
             <label htmlFor="content-region">目标地区</label>
-            <select id="content-region" name="region" className="field" defaultValue="">
+            <select id="content-region" name="region" className="field" value={region}
+              onChange={event => setRegion(event.target.value)}
+              aria-describedby={regionMissing ? 'content-region-warning' : undefined}>
               <option value="">未指定</option>
               <option>江西</option><option>安徽</option><option>广东</option><option>山西</option>
             </select>
+            {regionMissing && <p className="content-mode-note" id="content-region-warning">
+              本地库暂无标注为{region}的政策。写一般政策解读时可选「未指定」，地方细则仍需当地政策来源。
+            </p>}
           </div>
           <div className="content-field-pair">
             <div className="content-field"><label htmlFor="content-platform">发布平台</label>
@@ -229,7 +261,8 @@ export default function ContentStudio() {
             </div>
             <div className="content-field"><label htmlFor="content-length">目标字数</label>
               <input id="content-length" name="target_chars" type="number" className="field"
-                min={100} max={5000} step={1} defaultValue={800} required />
+                min={100} max={5000} step={1} value={targetChars}
+                onChange={event => setTargetChars(event.target.value)} required />
             </div>
           </div>
           <div className="content-field"><label htmlFor="content-style">表达风格</label>
@@ -315,7 +348,11 @@ export default function ContentStudio() {
             </div>}
           </header>
           {pending && <p role="status" className="content-inline-pending"><LoaderCircle size={14} className="spinner" />正在等待完整业务流程响应…</p>}
-          {run && <div className="content-draft-state"><StatusBadge value={run.status} /><span>{run.status_reason}</span></div>}
+          {run && <div className="content-draft-state" role="status">
+            <StatusBadge value={run.status} />
+            {editableDraft && <strong>草稿已生成</strong>}
+            {!aborted && <span>{run.status_reason}</span>}
+          </div>}
           {editableDraft ? <>
             <div className="content-draft-state">
               <span>模型 {editableDraft.model_name} · {editableDraft.prompt_version} · {editableDraft.generation_mode === 'mock' ? '本地 Mock' : '真实模型'}</span>
@@ -371,8 +408,14 @@ export default function ContentStudio() {
                 {!point.claim_ids.length && <span className="content-warning-text">未关联研究主张</span>}
               </li>)}</ul>
             </div>}
-          </> : <Empty title={pending ? '等待工作流响应…' : (run?.status === 'aborted' ? '证据不足，未生成文案' : '暂无文案草稿')}
+          </> : <Empty title={pending ? '等待工作流响应…' : (aborted ? '证据不足，未生成文案' : '暂无文案草稿')}
             description={draft?.status_reason || (!run ? '完成政策研究后，生成草稿会显示在这里。' : undefined)} />}
+          {aborted && <div className="content-open-questions">
+            <p>{verifiedQuotes > 0 ? `找到 ${verifiedQuotes} 条与政策原文核验一致的引文，仍缺少足以支撑当前选题的依据。`
+              : '本次没有取得可核验的政策引文。'}</p>
+            <p>可先用政策全名和一个具体问题缩小选题。地方金额、补贴或生效日期需要对应政策条款。</p>
+            <div className="content-actions"><a className="button button-quiet" href="#/data/policies">查看本地政策</a></div>
+          </div>}
         </Panel>
       </div>
 
@@ -386,7 +429,7 @@ export default function ContentStudio() {
           {research.region && <p className="content-region-note">请求地区：{research.region}。政策适用范围需人工核实。</p>}
           <div className="content-result-meta">
             {evidenceItems.length > 0 && <StatusBadge value={evidenceItems.some(item => item.status === 'candidate') ? 'candidate' : 'verified'} />}
-            <span>{evidenceItems.filter(item => item.status === 'verified').length} 条引文与原文位置核验一致</span>
+            <span>{verifiedQuotes} 条引文与原文位置核验一致</span>
             <span>语义支持需人工确认</span>
           </div>
           {evidenceItems.length > 0 ? <div className="content-evidence-list">
