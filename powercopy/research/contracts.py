@@ -315,6 +315,13 @@ class EvidencePackage(BaseModel):
         return {item.evidence_id: item for item in self.evidence_items}
 
     def verified_claim_count(self) -> int:
+        """已通过**原文核验**的候选事实数。
+
+        **注意**：这不等于「已验证的事实」。这些 claim 的状态是
+        `PENDING_REVIEW`，只表示「引文真实存在且引用有效」，
+        语义支持性尚未确认。
+        """
+
         return sum(
             1
             for c in self.claims
@@ -324,8 +331,57 @@ class EvidencePackage(BaseModel):
     def rejected_claim_count(self) -> int:
         return sum(1 for c in self.claims if c.status is ClaimStatus.REJECTED)
 
+    # ---- 分项统计：三个层级必须分开，不能合并成一个「已验证」数字 ----
+
+    def statistics(self) -> dict:
+        """三层统计，刻意分开。
+
+        | 层级 | 含义 | 本阶段能否自动判定 |
+        |---|---|---|
+        | 原文核验通过 | 引文逐字存在于原文该偏移 | ✅ 程序判定 |
+        | 语义支持待审核 | 引文真实，但是否支持该结论未知 | ❌ 需人工 |
+        | 人工确认通过 | 经人确认语义成立 | ❌ 尚未实现 |
+
+        把 `pending_review` 计入「已验证事实」会高估可信度，
+        因此这里**分开统计**。
+        """
+
+        text_verified = sum(
+            1
+            for c in self.claims
+            if c.status in (ClaimStatus.VERIFIED, ClaimStatus.PENDING_REVIEW)
+        )
+        pending_review = sum(
+            1 for c in self.claims if c.status is ClaimStatus.PENDING_REVIEW
+        )
+        # 人工确认通道尚未实现，恒为 0（不伪造）
+        human_confirmed = 0
+        rejected = sum(
+            1 for c in self.claims if c.status is ClaimStatus.REJECTED
+        )
+        candidate = sum(
+            1 for c in self.claims if c.status is ClaimStatus.CANDIDATE
+        )
+
+        return {
+            "claims_total": len(self.claims),
+            "claims_text_verified": text_verified,
+            "claims_pending_semantic_review": pending_review,
+            "claims_human_confirmed": human_confirmed,
+            "claims_rejected": rejected,
+            "claims_candidate": candidate,
+            "human_confirmation_available": False,
+            "note": (
+                "claims_text_verified 仅表示引文与原文一致；"
+                "语义支持性未判定。human_confirmed 恒为 0，"
+                "因为人工确认通道尚未实现。"
+            ),
+        }
+
     def summary(self) -> dict:
         """供 CLI / API 展示的摘要。"""
+
+        stats = self.statistics()
 
         return {
             "research_id": self.research_id,
@@ -336,8 +392,12 @@ class EvidencePackage(BaseModel):
                 1 for q in self.research_questions if q.answered
             ),
             "claims_total": len(self.claims),
-            "claims_verified": self.verified_claim_count(),
-            "claims_rejected": self.rejected_claim_count(),
+            "claims_text_verified": stats["claims_text_verified"],
+            "claims_pending_semantic_review": stats[
+                "claims_pending_semantic_review"
+            ],
+            "claims_human_confirmed": stats["claims_human_confirmed"],
+            "claims_rejected": stats["claims_rejected"],
             "evidence_total": len(self.evidence_items),
             "evidence_verified": sum(
                 1

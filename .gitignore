@@ -28,6 +28,7 @@ storage/ingestion_runs/
 storage/rag/
 storage/models/
 storage/research/
+storage/copywriting/
 workspace/
 *.sqlite3
 *.sqlite3-journal

@@ -43,6 +43,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from powercopy.core.budget import BudgetExceeded as CoreBudgetExceeded
+from powercopy.core.budget import TaskBudget
 from powercopy.core.trace import ExecutionTrace, get_current_trace
 from powercopy.research.contracts import (
     MAX_CLAIMS,
@@ -104,6 +106,8 @@ class ResearchContext:
     research_id: str
     trace: ExecutionTrace | None = None
     tool_calls: int = 0
+    budget: TaskBudget | None = None
+    """统一的模型调用预算。真实 LLM 与内部重试都受它约束。"""
 
 
 class ResearchError(RuntimeError):
@@ -162,8 +166,20 @@ class ResearchAgent:
 
         research_id = f"res-{uuid.uuid4().hex[:16]}"
         trace = get_current_trace()
+
+        # 统一预算：真实 LLM 调用与内部重试都受 TaskBudget 约束。
+        # 之前只用一个自增的 tool_calls 计数器管工具，模型调用完全没有预算，
+        # 真实 LLM 模式下可能无限调用。
+        core_budget = TaskBudget(
+            max_api_attempts=self.budget.max_api_attempts,
+            max_known_tokens=self.budget.max_known_tokens,
+        )
+
         ctx = ResearchContext(
-            request=request, research_id=research_id, trace=trace
+            request=request,
+            research_id=research_id,
+            trace=trace,
+            budget=core_budget,
         )
 
         uncertainties: list[str] = []
@@ -217,9 +233,41 @@ class ResearchAgent:
             for item in new_evidence:
                 evidence_by_id.setdefault(item.evidence_id, item)
 
-            claims, done = self._extract(
-                ctx, question, hits, evidence_by_id, uncertainties
-            )
+            try:
+                claims, done = self._extract(
+                    ctx, question, hits, evidence_by_id, uncertainties
+                )
+            except BudgetExhausted:
+                # 预算耗尽：保留已检索到的证据，剩余问题记为未解决，
+                # 继续走核验与汇总流程，产出 PARTIAL 证据包。
+                unanswered.append(question.text)
+                answered_questions.append(
+                    question.model_copy(update={"answered": False})
+                )
+                uncertainties.append(
+                    f"模型预算耗尽，问题「{question.text}」未提取候选事实；"
+                    f"已检索到的原文片段仍作为候选证据保留"
+                )
+                for remaining in questions[questions.index(question) + 1 :]:
+                    if remaining.text not in unanswered:
+                        unanswered.append(remaining.text)
+                        answered_questions.append(
+                            remaining.model_copy(update={"answered": False})
+                        )
+                        uncertainties.append(
+                            f"模型预算耗尽，问题「{remaining.text}」未检索"
+                        )
+                break
+            except ResearchError as exc:
+                unanswered.append(question.text)
+                answered_questions.append(
+                    question.model_copy(update={"answered": False})
+                )
+                uncertainties.append(
+                    f"问题「{question.text}」提取候选事实失败：{exc}"
+                )
+                continue
+
             raw_claims.extend(claims)
 
             if done and claims:
@@ -249,6 +297,48 @@ class ResearchAgent:
         final_claims = self.verifier.verify_claims(
             raw_claims[:MAX_CLAIMS], verified, issues_report
         )
+
+        # ---- 依据最终核验结果重算问题完成状态 ----
+        #
+        # 之前的问题状态是在「提取完 claim」时就定下的，那时还没做核验。
+        # 若某条 claim 因引用无效证据被拒，对应问题本应退回未解决，
+        # 但旧实现仍标为 answered —— 下游会误以为该问题已解决。
+        #
+        # 现在改为：以已通过核验的 claim（PENDING_REVIEW）为准重算。
+        usable_claim_ids = {
+            c.claim_id
+            for c in final_claims
+            if c.status is ClaimStatus.PENDING_REVIEW
+        }
+        recomputed: list[ResearchQuestion] = []
+        reverted_not_answered = 0
+
+        for question in answered_questions:
+            surviving = [
+                cid for cid in question.claim_ids if cid in usable_claim_ids
+            ]
+            if question.answered and not surviving:
+                # 原本「已回答」，但其全部 claim 已被拒 → 退回未解决
+                reverted_not_answered += 1
+                recomputed.append(
+                    question.model_copy(
+                        update={"answered": False, "claim_ids": []}
+                    )
+                )
+                if question.text not in unanswered:
+                    unanswered.append(question.text)
+                continue
+            recomputed.append(
+                question.model_copy(update={"claim_ids": surviving})
+            )
+
+        answered_questions = recomputed
+
+        if reverted_not_answered:
+            uncertainties.append(
+                f"{reverted_not_answered} 个问题因其引用的候选事实未通过核验，"
+                f"已退回未解决状态"
+            )
 
         # 时效
         validity, validity_note = self.verifier.assess_validity(
@@ -575,11 +665,52 @@ class ResearchAgent:
     def _invoke_json(
         self, ctx: ResearchContext, system: str, prompt: str
     ) -> dict:
+        """调用模型并解析 JSON。受 TaskBudget 约束。
+
+        Args:
+            ctx: 研究上下文，其 budget 是统一预算
+
+        Raises:
+            BudgetExhausted: 预算耗尽
+            ResearchError: 输出为空或无法解析
+        """
+
         messages = [
             {"role": "system", "content": system},
             {"role": "user", "content": prompt},
         ]
-        response = self.llm.invoke(messages)
+
+        budget = ctx.budget
+        if budget is not None:
+            # 先检查是否已经耗尽，再预占一次尝试
+            stop = budget.stop_reason()
+            if stop is not None:
+                raise BudgetExhausted(f"模型预算耗尽（{stop}）")
+            try:
+                budget.reserve_api_attempt()
+            except CoreBudgetExceeded as exc:
+                raise BudgetExhausted(
+                    f"模型预算耗尽（{getattr(exc, 'reason', 'unknown')}）"
+                ) from exc
+
+        try:
+            response = self.llm.invoke(messages)
+        except Exception as exc:
+            raise ResearchError(f"模型调用失败：{exc}") from exc
+
+        # 记录 token 消耗（若模型返回 usage）
+        if budget is not None and isinstance(response, dict):
+            usage = response.get("usage")
+            tokens = None
+            if isinstance(usage, dict):
+                tokens = usage.get("total_tokens")
+            elif isinstance(usage, int):
+                tokens = usage
+            if isinstance(tokens, int) and tokens >= 0:
+                budget.record_usage(tokens)
+            else:
+                budget.record_usage(None)
+
         raw = response.get("content") if isinstance(response, dict) else None
         if not raw:
             raise ResearchError("模型返回空内容")
