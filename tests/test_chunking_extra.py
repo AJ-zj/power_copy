@@ -71,10 +71,16 @@ def pdf_preview():
     reason="缺少真实政策库或解析配置",
 )
 class TestRealPolicyChunking:
-    def test_two_documents(self, real_manifest):
-        assert len(real_manifest["documents"]) == 2
+    def test_documents_present(self, real_manifest):
+        """政策库至少包含原始的 ndrc + nea 两份 HTML 政策。
+
+        实际政策库可能还包含后续通过 PDF 摄取加入的政策
+        （华东监管局规范性文件），因此只断言「至少包含」，
+        不硬编码总数 —— 否则每扩一次语料就要改测试。
+        """
         keys = {doc["source_key"] for doc in real_manifest["documents"]}
-        assert keys == {"ndrc", "nea"}
+        assert {"ndrc", "nea"} <= keys
+        assert len(real_manifest["documents"]) >= 2
 
     def test_database_not_modified(self, real_manifest):
         """构建清单不得写库。"""
@@ -192,8 +198,19 @@ class TestRealPolicyChunking:
             assert chunks[-1]["end"] == len(body)
 
     def test_html_documents_have_no_page_number(self, real_manifest):
+        """HTML 来源的切片不应有页码；PDF 来源的应有页码。
+
+        政策库可能同时包含 HTML 与 PDF 政策，因此按 source_url
+        区分断言，而不是要求全部为 None。
+        """
         for chunk in real_manifest["chunks"]:
-            assert chunk["page"] is None
+            url = str(chunk.get("source_url") or "")
+            if url.lower().endswith(".pdf"):
+                # PDF 来源必须有页码
+                assert chunk["page"] is not None
+            else:
+                # HTML 来源不得有页码
+                assert chunk["page"] is None
 
 
 # ==========================================================================

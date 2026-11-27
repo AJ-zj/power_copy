@@ -113,11 +113,13 @@ class TestRealSearch:
         )
 
         assert result.success is True
-        assert result.data["returned"] == 2
+        # 语料随采集扩充，断言「至少包含原始两份国家级政策」
+        # 而不是硬编码总数
+        assert result.data["returned"] >= 2
         assert result.data["search_mode"] == "literal_substring"
 
         ids = {item["policy_id"] for item in result.data["items"]}
-        assert ids == {NDRC_POLICY_ID, NEA_POLICY_ID}
+        assert {NDRC_POLICY_ID, NEA_POLICY_ID} <= ids
 
     def test_search_title_and_body_both_match(self, live_registry):
         executor = ToolExecutor(live_registry)
@@ -128,11 +130,13 @@ class TestRealSearch:
         )
         assert by_title.data["items"][0]["policy_id"] == NDRC_POLICY_ID
 
-        # 只在正文出现的词
+        # 只在正文出现的词。语料扩充后可能有其他政策也含该词，
+        # 断言「包含 NDRC」而不是「恰好只有 NDRC」。
         by_body = executor.execute(
             "search_policy", '{"region": "", "keyword": "电能计量检测机构"}'
         )
-        assert [i["policy_id"] for i in by_body.data["items"]] == [NDRC_POLICY_ID]
+        ids = [i["policy_id"] for i in by_body.data["items"]]
+        assert NDRC_POLICY_ID in ids
 
     def test_search_result_has_no_body_text(self, live_registry):
         executor = ToolExecutor(live_registry)
@@ -194,7 +198,8 @@ class TestRegionHandling:
             "search_policy", '{"region": "", "keyword": "电力"}'
         )
         assert result.data["region_filter"] == "all"
-        assert result.data["returned"] == 2
+        # 返回条数受默认 limit 约束，只断言「返回了结果」
+        assert result.data["returned"] >= 2
 
     def test_unknown_region_returns_nothing(self, live_registry):
         executor = ToolExecutor(live_registry)
@@ -378,7 +383,8 @@ class TestReadOnlyAndInjection:
         assert result.data["items"] == []
         # 表仍然存在
         conn = sqlite3.connect(DB)
-        assert conn.execute("SELECT COUNT(*) FROM policy_documents").fetchone()[0] == 2
+        # 注入未生效：表仍存在且仍有政策（数量随语料增长，不硬编码）
+        assert conn.execute("SELECT COUNT(*) FROM policy_documents").fetchone()[0] >= 2
         conn.close()
 
     def test_metacharacters_are_literal(self, live_registry):
@@ -563,7 +569,7 @@ class TestRegistryAndSchema:
             "search_policy", '{"region": "", "keyword": "电力"}'
         )
         assert result.success is True
-        assert result.data["returned"] == 2
+        assert result.data["returned"] >= 2
 
     def test_explicit_limit_respected(self, live_registry):
         executor = ToolExecutor(live_registry)

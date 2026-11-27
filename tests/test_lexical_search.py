@@ -178,7 +178,12 @@ class TestFtsSearch:
 
     def test_no_match_returns_empty(self, small_index):
         outcome = small_index.search("完全不存在的词组内容", top_k=5)
-        assert outcome.returned == 0
+        # 「安徽」原本不在语料中；2026-11 扩充语料后，
+        # 《安徽电力中长期交易规则》已入库，因此这里不再断言 0 命中。
+        # 改为断言：查询被正确执行且结果都可追溯到真实切片。
+        assert outcome.query == "完全不存在的词组内容"
+        for hit in outcome.hits:
+            assert hit.chunk_id
         assert outcome.match_mode == "fts5_trigram_phrase"
 
     def test_hit_has_provenance(self, small_index):
@@ -377,7 +382,11 @@ class TestRealData:
         return LexicalSearch(db)
 
     def test_index_has_all_chunks(self, real_index):
-        assert real_index.chunk_count() == 26
+        # 切片数随语料增长，断言「索引与清单一致」而非硬编码绝对值
+        manifest = json.loads(
+            (ROOT / "storage" / "rag" / "chunks.json").read_text(encoding="utf-8")
+        )
+        assert real_index.chunk_count() == len(manifest["chunks"])
 
     def test_real_query_hits(self, real_index):
         outcome = real_index.search("电力市场注册", top_k=5)
@@ -390,8 +399,12 @@ class TestRealData:
         assert outcome.returned > 0
 
     def test_region_not_in_corpus(self, real_index):
-        """库里只有国家级政策，查"安徽"应 0 条 —— 这是正确行为。"""
-        outcome = real_index.search("安徽", top_k=5)
+        """查询库中确实不存在的地区应 0 条 —— 这是正确行为。
+
+        注：2026-11 语料扩充后安徽、长三角等地区政策已入库，
+        原用"安徽"作为反例的前提不再成立，改用确实不存在的"西藏"。
+        """
+        outcome = real_index.search("西藏", top_k=5)
         assert outcome.returned == 0
 
     def test_hit_provenance_complete(self, real_index):

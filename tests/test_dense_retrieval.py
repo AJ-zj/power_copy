@@ -551,7 +551,11 @@ class TestRealData:
         return DenseSearch(index, manifest_path=MANIFEST, embedder=embedder)
 
     def test_chunk_count(self, real_index):
-        assert real_index.chunk_count() == 26
+        # 切片数随语料增长，断言与清单一致而非硬编码
+        manifest = json.loads(
+            (ROOT / "storage" / "rag" / "chunks.json").read_text(encoding="utf-8")
+        )
+        assert real_index.chunk_count() == len(manifest["chunks"])
 
     def test_dim(self, real_index):
         assert real_index.meta["dim"] == 512
@@ -568,15 +572,18 @@ class TestRealData:
         assert hit.version == 1
 
     def test_no_false_confidence_on_absent_topic(self, real_index):
-        """库里没有安徽政策，但向量检索仍会返回 Top-K。
+        """向量检索必然返回 Top-K，即使库里没有真正相关的内容。
 
         这不是 bug，而是必须如实记录的行为：
         相似度高不代表存在证据。
+
+        注：2026-11 语料扩充后《安徽电力中长期交易规则》已入库，
+        因此改用库中确实不存在的主题（新疆）来演示同一现象。
         """
-        out = real_index.search("安徽电力现货市场交易规则", top_k=5)
+        out = real_index.search("新疆电力现货市场交易规则", top_k=5)
         # 向量检索必然返回结果
         assert out.returned == 5
-        # 但不应命中任何含"安徽"的切片（库里没有）
-        assert not any("安徽" in h.text for h in out.hits)
+        # 但不应命中任何含"新疆"的切片（库里没有）
+        assert not any("新疆" in h.text for h in out.hits)
         # notice 必须声明
         assert "不代表证据充分" in out.notice

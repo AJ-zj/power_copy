@@ -12,6 +12,10 @@ from uuid import uuid4
 from pydantic import AnyHttpUrl, AwareDatetime, BaseModel, ConfigDict, Field
 from pypdf import PdfReader, __version__ as PYPDF_VERSION
 from powercopy.data.models import PolicyDocument
+from powercopy.data.pdf_blank_policy import (
+    BlankPagePolicyError,
+    check_blank_policy,
+)
 from powercopy.data.versioning import VersionedPolicyStore, _sha, _json_hash, _utc, content_hash
 
 MAX_BYTES = 10 * 1024 * 1024
@@ -112,10 +116,27 @@ class PdfPreview:
     content_sha256: str
     raw_sha256: str
     parser_version: str
+    blank_pages: tuple[int, ...] = ()
 
 
-def preview_pdf(artifact: PdfArtifact):
+def preview_pdf(artifact: PdfArtifact, *, allow_blank_pages: bool = False):
+    """解析 PDF，产出待审核预览。
+
+    Args:
+        artifact: PDF 工件
+        allow_blank_pages: 是否允许空白页。
+
+            默认 False（原行为：任一无文字页即拒绝整篇）。
+            True 时允许空白页，但**空白页号会写入审批指纹**，
+            操作员确认 SHA 即确认了「第 N 页确实空白」这个事实。
+            整篇无文字、空白过多仍会被拒绝。
+
+            为什么不做成默认：原有调用方（`ingest_pdf.py` CLI）依赖
+            「严格模式」的语义，改动默认值会让既有审批失效。
+    """
+
     body = artifact.body_bytes()
+    blank_pages: list[int] = []
     try:
         reader = PdfReader(BytesIO(body), strict=True)
         if reader.is_encrypted:
@@ -130,13 +151,26 @@ def preview_pdf(artifact: PdfArtifact):
                 raise PdfIngestError(f'INVALID_PAGE_TEXT:{number}')
             text = '\n'.join(line.rstrip() for line in text.split('\n')).strip()
             if not text:
-                raise PdfIngestError(f'PAGE_WITHOUT_TEXT:{number}')
+                if not allow_blank_pages:
+                    raise PdfIngestError(f'PAGE_WITHOUT_TEXT:{number}')
+                # 记录空白页但不产生正文区间，指纹会包含它
+                blank_pages.append(number)
+                continue
             if len(text) > MAX_PAGE_CHARS or cursor + len(text) > MAX_CHARS:
                 raise PdfIngestError('TEXT_LIMIT')
             pages.append(PdfPage(number, text, cursor, cursor+len(text)))
             cursor += len(text)+len(PAGE_BREAK)
+
+        if allow_blank_pages:
+            check_blank_policy(
+                list(range(1, len(reader.pages) + 1)), blank_pages
+            )
+            if not pages:
+                raise PdfIngestError('NO_TEXT_PAGES')
     except PdfIngestError:
         raise
+    except BlankPagePolicyError as exc:
+        raise PdfIngestError(str(exc)) from exc
     except Exception as exc:
         raise PdfIngestError('PDF_PARSE_FAILED') from exc
     m = artifact.metadata
@@ -146,14 +180,18 @@ def preview_pdf(artifact: PdfArtifact):
     digest = content_hash(doc)
     version = 'pdf-text-v1/pypdf-'+PYPDF_VERSION
     # Bind human review to exact input, extracted text, metadata and parser version.
+    # 空白页号也进入指纹：空白页从"被拒绝的原因"变成"被确认的事实"。
     fingerprint = _json_hash({'fetch_id':artifact.fetch_id, 'raw_sha256':artifact.raw_sha256,
         'content_sha256':digest, 'metadata':m.model_dump(mode='json'), 'parser':version,
-        'page_ranges':[(p.number,p.start,p.end) for p in pages], 'kind':artifact.acquisition_kind})
-    return PdfPreview(doc,tuple(pages),fingerprint,digest,artifact.raw_sha256,version)
+        'page_ranges':[(p.number,p.start,p.end) for p in pages], 'kind':artifact.acquisition_kind,
+        'blank_pages':blank_pages})
+    return PdfPreview(doc,tuple(pages),fingerprint,digest,artifact.raw_sha256,version,
+                      tuple(blank_pages))
 
 
-def ingest_pdf(store: VersionedPolicyStore, artifact: PdfArtifact, *, approved_sha256: str):
-    preview = preview_pdf(artifact)
+def ingest_pdf(store: VersionedPolicyStore, artifact: PdfArtifact, *, approved_sha256: str,
+               allow_blank_pages: bool = False):
+    preview = preview_pdf(artifact, allow_blank_pages=allow_blank_pages)
     if approved_sha256 != preview.review_sha256:
         raise PdfIngestError('REVIEW_REQUIRED_OR_STALE')
     return store._ingest_prepared(preview.document, fetch_id=artifact.fetch_id,

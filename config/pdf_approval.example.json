@@ -1,0 +1,16 @@
+{
+  "_comment": "PDF 入库审批文件。每个条目对应 storage/pdf_staging/ 下的一个 artifact 文件名。必须同时提供 approved=true 与 review_sha256（从 manifest.json 的待审批清单复制）。本文件已列入 .gitignore，不会提交到公开仓库。",
+  "_instructions": [
+    "1. 查看 storage/pdf_staging/manifest.json 中 status=ready_for_review 的条目",
+    "2. 核对 title / pages / chars 是否合理，必要时用 _check_quality 类脚本看正文",
+    "3. 把该条目的 artifact 文件名作为 key，review_sha256 原样复制",
+    "4. 填写 reviewer 与 note",
+    "5. 执行 python scripts/prepare_pdf_candidates.py --ingest storage/pdf_staging/manifest.json"
+  ],
+  "example-artifact.json": {
+    "approved": false,
+    "review_sha256": "",
+    "reviewer": "",
+    "note": "示例条目，请替换为真实 artifact 文件名"
+  }
+}

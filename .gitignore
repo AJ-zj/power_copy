@@ -70,3 +70,7 @@ config/pricing.json
 # 模板见 config/ingestion_approval.example.json
 config/ingestion_approval.json
 storage/ingest/
+
+# PDF 候选暂存与审批记录（运行期数据，不入公开仓库）
+storage/pdf_staging/
+config/pdf_approval.json
