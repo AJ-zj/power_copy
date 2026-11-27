@@ -83,7 +83,8 @@ async function check() {
     await candidate.getByRole('link', { name: '访问官方来源' }).waitFor()
     assert.match(await candidate.getByRole('link', { name: '访问官方来源' }).getAttribute('href'), /^https?:\/\//)
     await page.evaluate(() => window.scrollTo(0, 0))
-    await page.screenshot({ path: path.join(screenshots, 'rag-studio.png'), fullPage: true })
+    await page.setViewportSize({ width: 1440, height: 1650 })
+    await page.screenshot({ path: path.join(screenshots, 'rag-studio.png') })
     console.log('PASS Hybrid 双路贡献、候选全文及来源')
 
     await candidate.getByRole('link', { name: '查看政策原文' }).click()
